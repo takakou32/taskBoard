@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "2026-W28",
+  "range": { "start": "2026-07-06", "end": "2026-07-12" },
+  "closed": true,
+  "goals": [
+    { "id": "g-w28-a", "key": "A", "title": "上期の実績データを揃える", "status": "achieved", "carriedFrom": null, "carryStreak": 0 },
+    { "id": "g-w28-b", "key": "B", "title": "安全衛生の年次チェック", "status": "achieved", "carriedFrom": null, "carryStreak": 0 }
+  ],
+  "tasks": [
+    { "id": "t-2801", "title": "実績データの抽出条件を確定", "status": "done", "goalId": "g-w28-a", "continuingGoalId": null, "assignees": ["m-sato"], "due": "2026-07-08", "priority": "normal", "projectId": "p-a", "carriedFrom": null, "history": [] },
+    { "id": "t-2802", "title": "集計表のレビュー", "status": "done", "goalId": "g-w28-a", "continuingGoalId": null, "assignees": ["m-tanaka"], "due": "2026-07-10", "priority": "normal", "projectId": "p-a", "carriedFrom": null, "history": [] },
+    { "id": "t-2810", "title": "安全衛生チェックリスト配布", "status": "done", "goalId": "g-w28-b", "continuingGoalId": null, "assignees": ["m-kobayashi"], "due": "2026-07-09", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] }
+  ]
+}

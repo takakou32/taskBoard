@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>タスクボード</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="toolbar">
+    <span class="brand">タスクボード<small id="boardName"></small></span>
+    <button class="btn primary" id="btnNewTask">＋ 新規タスク</button>
+    <span class="weeknav">
+      <span class="arw" id="btnPrev" title="前の週">◀</span>
+      <span class="lbl" id="weekLabel">----</span>
+      <span class="arw" id="btnNext" title="次の週">▶</span>
+    </span>
+    <span class="daysleft" id="daysLeft"></span>
+    <button class="btn" id="btnThisWeek">今週へ</button>
+    <button class="btn" id="btnCloseWeek">週を締める</button>
+    <input class="search" id="search" placeholder="タスク・目標を検索…" autocomplete="off">
+    <button class="btn on" data-view="board">看板</button>
+    <button class="btn" data-view="assignee">担当者</button>
+    <button class="btn" data-view="retro">振り返り</button>
+    <button class="btn" id="btnSettings" title="メンバーと案件">⚙</button>
+    <span class="spacer"></span>
+    <span class="avatars" id="avatars"></span>
+    <span class="sync" id="sync"><i></i><span id="syncText">起動中…</span></span>
+  </div>
+
+  <div class="banner" id="banner">
+    <span id="bannerText"></span>
+    <button class="btn" id="bannerAction"></button>
+  </div>
+
+  <div class="board-scroll" id="viewRoot">
+    <div class="placeholder">読み込み中…</div>
+  </div>
+
+  <!-- タスク詳細 / 新規作成ドロワー -->
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" hidden aria-label="タスク詳細">
+    <div class="drawer-h">
+      <span class="drawer-title" id="drawerTitle">タスク</span>
+      <button class="btn icon" id="drawerClose" title="閉じる">✕</button>
+    </div>
+    <div class="drawer-b">
+      <label class="field">
+        <span class="k">タイトル</span>
+        <textarea id="fTitle" rows="2" placeholder="何をするか"></textarea>
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span class="k">ステータス</span>
+          <select id="fStatus"></select>
+        </label>
+        <label class="field">
+          <span class="k">期限</span>
+          <input type="date" id="fDue">
+        </label>
+      </div>
+      <label class="field">
+        <span class="k">目標</span>
+        <select id="fGoal"></select>
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span class="k">案件</span>
+          <select id="fProject"></select>
+        </label>
+        <label class="field">
+          <span class="k">優先度</span>
+          <select id="fPriority">
+            <option value="normal">通常</option>
+            <option value="high">高</option>
+          </select>
+        </label>
+      </div>
+      <div class="field">
+        <span class="k">担当</span>
+        <div class="picker" id="fAssignees"></div>
+      </div>
+      <label class="field">
+        <span class="k">メモ</span>
+        <textarea id="fDesc" rows="4" placeholder="補足・決定事項など"></textarea>
+      </label>
+      <div class="field" id="histWrap" hidden>
+        <span class="k">履歴</span>
+        <div class="hist" id="fHistory"></div>
+      </div>
+    </div>
+    <div class="drawer-f">
+      <button class="btn danger" id="btnDelete">削除</button>
+      <span class="spacer"></span>
+      <button class="btn" id="btnCancel">キャンセル</button>
+      <button class="btn primary" id="btnSave">保存</button>
+    </div>
+  </aside>
+
+  <!-- 週の目標 編集ドロワー -->
+  <aside class="drawer" id="goalDrawer" hidden aria-label="目標の編集">
+    <div class="drawer-h">
+      <span class="drawer-title" id="goalDrawerTitle">目標を編集</span>
+      <button class="btn icon" id="goalClose" title="閉じる">✕</button>
+    </div>
+    <div class="drawer-b">
+      <label class="field">
+        <span class="k">目標</span>
+        <textarea id="gTitle" rows="2" placeholder="今週これを終わらせる、という単位で"></textarea>
+      </label>
+      <label class="field">
+        <span class="k">状態</span>
+        <select id="gStatus">
+          <option value="running">進行中</option>
+          <option value="achieved">達成</option>
+          <option value="carried">持ち越し</option>
+        </select>
+      </label>
+      <p class="hint" id="gHint"></p>
+    </div>
+    <div class="drawer-f">
+      <button class="btn danger" id="gDelete">削除</button>
+      <span class="spacer"></span>
+      <button class="btn" id="gCancel">キャンセル</button>
+      <button class="btn primary" id="gSave">保存</button>
+    </div>
+  </aside>
+
+  <!-- 継続目標の管理ドロワー -->
+  <aside class="drawer" id="contDrawer" hidden aria-label="継続目標の管理">
+    <div class="drawer-h">
+      <span class="drawer-title">継続目標の管理</span>
+      <button class="btn icon" id="contClose" title="閉じる">✕</button>
+    </div>
+    <div class="drawer-b">
+      <p class="hint">週に属さず、毎週少しずつ進める目標です。週の締めでは判定されません。</p>
+      <div class="cglist" id="contList"></div>
+      <div class="field">
+        <span class="k">新しい継続目標</span>
+        <div class="addrow">
+          <input type="text" id="contNew" placeholder="例: 社内手順書の整備">
+          <button class="btn primary" id="contAdd">追加</button>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-f">
+      <span class="spacer"></span>
+      <button class="btn" id="contDone">閉じる</button>
+    </div>
+  </aside>
+
+  <!-- メンバー・案件の設定ドロワー -->
+  <aside class="drawer" id="setDrawer" hidden aria-label="メンバーと案件の設定">
+    <div class="drawer-h">
+      <span class="drawer-title">メンバーと案件</span>
+      <button class="btn icon" id="setClose" title="閉じる">✕</button>
+    </div>
+    <div class="drawer-b">
+      <div class="sec">
+        <div class="sec-h">メンバー</div>
+        <p class="hint">チームから外れた人は、削除より<b>休止</b>をお勧めします。休止すると新しい割り当ての候補から外れますが、過去の担当記録は残ります。</p>
+        <div class="mblist" id="memberList"></div>
+        <div class="field">
+          <span class="k">メンバーを追加</span>
+          <div class="addrow">
+            <input type="text" id="memberNew" placeholder="例: 山田" maxlength="20">
+            <button class="btn primary" id="memberAdd">追加</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h">案件</div>
+        <p class="hint">タスクをどの仕事に紐づけるかの分類です。終わった案件は休止にすると選択肢から外れます。</p>
+        <div class="mblist" id="projectList"></div>
+        <div class="field">
+          <span class="k">案件を追加</span>
+          <div class="addrow">
+            <input type="text" id="projectNew" placeholder="例: C社リプレース" maxlength="40">
+            <button class="btn primary" id="projectAdd">追加</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-f">
+      <span class="spacer"></span>
+      <button class="btn" id="setDone">閉じる</button>
+    </div>
+  </aside>
+
+  <!-- 週の締めダイアログ -->
+  <div class="scrim" id="closeScrim" hidden></div>
+  <div class="modal" id="closeModal" hidden role="dialog" aria-label="週を締める">
+    <div class="modal-h">
+      <div class="t" id="closeTitle">週を締める</div>
+      <div class="s" id="closeSub"></div>
+    </div>
+    <div class="modal-b" id="closeBody"></div>
+    <div class="modal-f">
+      <span class="note" id="closeSummary"></span>
+      <span class="spacer"></span>
+      <button class="btn" id="closeCancel">あとで</button>
+      <button class="btn primary" id="closeConfirm">締める</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

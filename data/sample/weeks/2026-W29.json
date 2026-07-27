@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "2026-W29",
+  "range": { "start": "2026-07-13", "end": "2026-07-19" },
+  "closed": true,
+  "goals": [
+    { "id": "g-w29-a", "key": "A", "title": "B社 キックオフと体制決め", "status": "achieved", "carriedFrom": null, "carryStreak": 0 },
+    { "id": "g-w29-b", "key": "B", "title": "A社 更新契約の書類を揃える", "status": "carried", "carriedFrom": null, "carryStreak": 0 },
+    { "id": "g-w29-c", "key": "C", "title": "PC入替の受領確認", "status": "achieved", "carriedFrom": null, "carryStreak": 0 }
+  ],
+  "tasks": [
+    { "id": "t-2901", "title": "キックオフ資料の作成", "status": "done", "goalId": "g-w29-a", "continuingGoalId": null, "assignees": ["m-tanaka"], "due": "2026-07-16", "priority": "normal", "projectId": "p-b", "carriedFrom": null, "history": [] },
+    { "id": "t-2902", "title": "体制図の合意", "status": "done", "goalId": "g-w29-a", "continuingGoalId": null, "assignees": ["m-tanaka", "m-sato"], "due": "2026-07-17", "priority": "normal", "projectId": "p-b", "carriedFrom": null, "history": [] },
+    { "id": "t-2910", "title": "更新契約の要否確認", "status": "done", "goalId": "g-w29-b", "continuingGoalId": null, "assignees": ["m-suzuki"], "due": "2026-07-15", "priority": "normal", "projectId": "p-a", "carriedFrom": null, "history": [] },
+    { "id": "t-2911", "title": "保守契約書のドラフト作成", "status": "todo", "goalId": "g-w29-b", "continuingGoalId": null, "assignees": ["m-tanaka"], "due": "2026-07-18", "priority": "normal", "projectId": "p-a", "carriedFrom": null, "history": [] },
+    { "id": "t-2920", "title": "PC入替の受領確認", "status": "done", "goalId": "g-w29-c", "continuingGoalId": null, "assignees": ["m-nakamura"], "due": "2026-07-17", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] }
+  ]
+}

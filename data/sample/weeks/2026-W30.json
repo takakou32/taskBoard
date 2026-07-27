@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "2026-W30",
+  "range": { "start": "2026-07-20", "end": "2026-07-26" },
+  "closed": false,
+  "goals": [
+    { "id": "g-w30-a", "key": "A", "title": "B社 要件定義を確定させる", "status": "running", "carriedFrom": null, "carryStreak": 0 },
+    { "id": "g-w30-b", "key": "B", "title": "A社 更新契約の書類を揃える", "status": "running", "carriedFrom": "2026-W29", "carryStreak": 1 },
+    { "id": "g-w30-c", "key": "C", "title": "月次締め作業を金曜までに終わらせる", "status": "running", "carriedFrom": null, "carryStreak": 0 }
+  ],
+  "tasks": [
+    { "id": "t-3001", "title": "帳票要件の残論点を洗い出す", "status": "todo", "goalId": "g-w30-a", "continuingGoalId": null, "assignees": ["m-tanaka"], "due": "2026-07-24", "priority": "high", "projectId": "p-b", "carriedFrom": null, "history": [] },
+    { "id": "t-3002", "title": "保守契約書のドラフト作成", "status": "todo", "goalId": "g-w30-b", "continuingGoalId": null, "assignees": ["m-tanaka"], "due": "2026-07-24", "priority": "normal", "projectId": "p-a", "carriedFrom": "2026-W29", "history": [] },
+    { "id": "t-3003", "title": "共有フォルダの権限棚卸し", "status": "todo", "goalId": null, "continuingGoalId": "cg-docs", "assignees": ["m-nakamura"], "due": "2026-07-24", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] },
+    { "id": "t-3004", "title": "備品発注のとりまとめ", "status": "todo", "goalId": null, "continuingGoalId": null, "assignees": ["m-kobayashi"], "due": "2026-07-25", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] },
+    { "id": "t-3010", "title": "要件ヒアリング議事録のまとめ", "status": "doing", "goalId": "g-w30-a", "continuingGoalId": null, "assignees": ["m-sato"], "due": "2026-07-24", "priority": "high", "projectId": "p-b", "carriedFrom": null, "history": [] },
+    { "id": "t-3011", "title": "現地調査の日程調整", "status": "doing", "goalId": "g-w30-b", "continuingGoalId": null, "assignees": ["m-kobayashi"], "due": "2026-07-24", "priority": "normal", "projectId": "p-a", "carriedFrom": null, "history": [] },
+    { "id": "t-3012", "title": "検証環境の再構築", "status": "doing", "goalId": null, "continuingGoalId": "cg-env", "assignees": ["m-sato"], "due": "2026-07-25", "priority": "normal", "projectId": "p-b", "carriedFrom": null, "history": [] },
+    { "id": "t-3020", "title": "構成図 v2 の内容確認", "status": "review", "goalId": "g-w30-a", "continuingGoalId": null, "assignees": ["m-suzuki", "m-tanaka"], "due": "2026-07-24", "priority": "normal", "projectId": "p-b", "carriedFrom": null, "history": [] },
+    { "id": "t-3021", "title": "経費精算フローの手順書", "status": "review", "goalId": null, "continuingGoalId": "cg-docs", "assignees": ["m-nakamura", "m-takahashi"], "due": "2026-07-24", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] },
+    { "id": "t-3030", "title": "7月度 勤怠の締め確認", "status": "done", "goalId": "g-w30-c", "continuingGoalId": null, "assignees": ["m-takahashi"], "due": "2026-07-23", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] },
+    { "id": "t-3031", "title": "前年度実績データの抽出", "status": "done", "goalId": "g-w30-a", "continuingGoalId": null, "assignees": ["m-sato"], "due": "2026-07-22", "priority": "normal", "projectId": "p-a", "carriedFrom": null, "history": [] },
+    { "id": "t-3032", "title": "請求データの突合", "status": "done", "goalId": "g-w30-c", "continuingGoalId": null, "assignees": ["m-suzuki"], "due": "2026-07-22", "priority": "normal", "projectId": "p-in", "carriedFrom": null, "history": [] }
+  ]
+}

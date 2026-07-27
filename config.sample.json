@@ -1,0 +1,9 @@
+{
+  "_comment": "このファイルを config.local.json にコピーして各環境に合わせて編集してください。config.local.json は共有せず各PC（またはNAS上の共通設定として1つ）に置きます。",
+
+  "dataRoot": "\\\\NAS-SERVER\\share\\taskboard\\data",
+  "_dataRoot_note": "データ本体（board.json と weeks フォルダ）を置く社内NAS上の共有パス。UNCパス（\\\\サーバ名\\共有名\\...）で指定。ローカルで試す場合は 'C:\\\\work\\\\taskBoard\\\\data\\\\sample' のように書きます。",
+
+  "actor": "",
+  "_actor_note": "操作者名。空の場合はWindowsのログインユーザー名を使います。履歴とロック表示に使われます。"
+}

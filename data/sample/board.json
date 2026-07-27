@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "boardName": "開発1課",
+  "settings": {
+    "weekStartsOn": "monday",
+    "weekEndsOn": "sunday"
+  },
+  "members": [
+    { "id": "m-tanaka", "name": "田中", "initial": "田", "color": "#2F6E86", "active": true },
+    { "id": "m-sato",   "name": "佐藤", "initial": "佐", "color": "#8A5A2B", "active": true },
+    { "id": "m-suzuki", "name": "鈴木", "initial": "鈴", "color": "#5B6E33", "active": true },
+    { "id": "m-takahashi", "name": "高橋", "initial": "高", "color": "#7A4A6E", "active": true },
+    { "id": "m-nakamura", "name": "中村", "initial": "中", "color": "#43607F", "active": true },
+    { "id": "m-kobayashi", "name": "小林", "initial": "小", "color": "#8C4A45", "active": true }
+  ],
+  "projects": [
+    { "id": "p-a", "name": "A社更新", "active": true },
+    { "id": "p-b", "name": "B社案件", "active": true },
+    { "id": "p-in", "name": "社内", "active": true }
+  ],
+  "continuingGoals": [
+    { "id": "cg-docs", "key": "S", "title": "社内手順書の整備", "active": true, "totalDone": 14 },
+    { "id": "cg-env",  "key": "T", "title": "検証環境の安定化", "active": true, "totalDone": 8 }
+  ]
+}
