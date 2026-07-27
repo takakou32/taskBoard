@@ -42,15 +42,22 @@ PowerShell から直接動かす場合:
 
 ## 本番運用（NAS共有）
 
-1. `config.sample.json` を `config.local.json` にコピーし、`dataRoot` をNASの共有パスに設定:
+1. NASの共有フォルダに **`data\template\board.json` をコピー**する
+   （例: `\\NAS-SERVER\share\taskboard\data\board.json`）。
+   中身は空です。`weeks\` などのフォルダはアプリが起動時に自動で作ります。
+2. `config.sample.json` を `config.local.json` にコピーし、`dataRoot` にその共有パスを設定:
 
    ```json
    { "dataRoot": "\\\\NAS-SERVER\\share\\taskboard\\data" }
    ```
-2. そのNASフォルダに `board.json` と `weeks\` を用意する（`data\sample` をコピーして中身を書き換えるのが早い）。
-   メンバーと案件はアプリの「⚙」から登録できるので、`board.json` は空に近い状態から始めても構いません。
 3. 各PCに、このフォルダ一式と `config.local.json` を配り、**タスクボード.bat** から起動してもらう。
    DLLは同梱されているので、配布先での準備作業はありません。
+4. 起動したら画面右上の **⚙** からメンバーと案件を登録する。
+
+詳しくは [data\template\README.md](data/template/README.md) を参照してください。
+
+> `data\template` や `data\sample` を `dataRoot` に直接指定しないでください。
+> git pull で実データが上書きされる恐れがあります。必ずNAS上にコピーして使ってください。
 
 フォルダごとNAS上に置いて、各PCからそこの bat を直接叩く運用でも動きます
 （bat は `pushd` を使っているので `\\サーバ名\共有名\...` のUNCパスから実行できます）。
@@ -59,6 +66,15 @@ PowerShell から直接動かす場合:
 ---
 
 ## データの形
+
+リポジトリ内の `data\` には2つ入っています。
+
+| | 用途 |
+| --- | --- |
+| `data\sample\` | 動作確認用の見本（W28〜W30、メンバー6名） |
+| `data\template\` | **本番用の空データ。NASにコピーする元** |
+
+実際に使われるデータの構成:
 
 ```
 <dataRoot>\

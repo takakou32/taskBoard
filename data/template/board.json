@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "boardName": "",
+  "settings": {
+    "weekStartsOn": "monday",
+    "weekEndsOn": "sunday"
+  },
+  "members": [],
+  "projects": [],
+  "continuingGoals": []
+}

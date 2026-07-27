@@ -115,10 +115,13 @@ function Get-WeekRange {
 }
 
 # ---- 週リスト --------------------------------------------------------------
+# 戻り値は常に配列。PowerShell は return で配列を展開してしまうため、
+# 空なら $null に、1件なら単体オブジェクトになってしまう。
+# 呼び出し側が .Count や [0] を使えるよう、先頭のカンマで配列のまま返す。
 function Get-WeekList {
     param([string]$Root)
     $dir = Get-WeeksDir $Root
-    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    if (-not (Test-Path -LiteralPath $dir)) { return ,@() }
     $list = @()
     Get-ChildItem -LiteralPath $dir -Filter '*.json' -File | ForEach-Object {
         $id = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
@@ -132,7 +135,7 @@ function Get-WeekList {
         }
     }
     # 新しい順
-    return @($list | Sort-Object { $_.id } -Descending)
+    return ,@($list | Sort-Object { $_.id } -Descending)
 }
 
 # ---- board / week の取得 ---------------------------------------------------
@@ -890,7 +893,8 @@ function Get-RetroSummary {
             carried   = @($goals | Where-Object { $_.status -eq 'carried' }).Count
         }
     }
-    return $out
+    # Get-WeekList と同じ理由で配列のまま返す（0件や1件でも UI が配列として扱えるように）
+    return ,@($out)
 }
 
 # ---- バックアップ ----------------------------------------------------------

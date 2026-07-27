@@ -38,11 +38,12 @@ $Config   = Resolve-Config -ConfigPath $ConfigPath -DataRootOverride $DataRoot
 $DataRoot = $Config.DataRoot
 $Actor    = $Config.Actor
 
+# 必要なサブフォルダ（weeks / .locks / backup）を毎回確認して作る。
+# board.json だけを置いた状態（data\template をNASにコピーした直後など）でも
+# 動くようにするため、board.json の有無にかかわらず実行する。冪等なので毎回でよい。
+Initialize-DataRoot $DataRoot
 if (-not (Test-Path -LiteralPath (Get-BoardPath $DataRoot))) {
-    Initialize-DataRoot $DataRoot
-    if (-not (Test-Path -LiteralPath (Get-BoardPath $DataRoot))) {
-        Write-Host "board.json が $DataRoot にありません。data\sample を参考に用意してください。" -ForegroundColor Yellow
-    }
+    Write-Host "board.json が $DataRoot にありません。data\template をコピーして使ってください。" -ForegroundColor Yellow
 }
 try { Backup-DataDaily $DataRoot } catch { Write-Host "バックアップ警告: $($_.Exception.Message)" -ForegroundColor Yellow }
 
