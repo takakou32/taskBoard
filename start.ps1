@@ -30,6 +30,32 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     return
 }
 
+# --- 初回セットアップ（WebView2 の DLL が無ければ取りに行く） ---------------
+# DLLはリポジトリに含めていないため、clone直後の初回起動では存在しない。
+# 利用者に手作業をさせないよう、ここで自動的に取得する。
+$libDir = Join-Path $Here 'lib'
+$needSetup = -not (Test-Path -LiteralPath (Join-Path $libDir 'Microsoft.Web.WebView2.Core.dll')) -or
+             -not (Test-Path -LiteralPath (Join-Path $libDir 'Microsoft.Web.WebView2.WinForms.dll'))
+if ($needSetup) {
+    Write-Host ""
+    Write-Host "初回セットアップ: 画面表示に必要な部品を取得します（数十秒かかります）…" -ForegroundColor Cyan
+    $setup = Join-Path $Here 'setup-webview2.ps1'
+    if (-not (Test-Path -LiteralPath $setup)) {
+        throw "setup-webview2.ps1 が見つかりません。ファイル一式が揃っているか確認してください。"
+    }
+    try {
+        & $setup
+    } catch {
+        Write-Host ""
+        Write-Host "自動取得に失敗しました: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "社内ネットワークからインターネットに出られない場合は、" -ForegroundColor Yellow
+        Write-Host "つながるPCで setup-webview2.ps1 を実行し、lib フォルダごとコピーしてください。" -ForegroundColor Yellow
+        throw "初回セットアップに失敗しました。"
+    }
+    Write-Host ""
+}
+
 # --- 設定ファイルの解決 -----------------------------------------------------
 $configLocal  = Join-Path $Here 'config.local.json'
 $configPath   = if (Test-Path -LiteralPath $configLocal) { $configLocal } else { $null }
