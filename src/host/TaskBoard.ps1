@@ -25,26 +25,127 @@ function Resolve-Config {
     param([string]$ConfigPath, [string]$DataRootOverride)
     $cfg = $null
     if ($ConfigPath -and (Test-Path -LiteralPath $ConfigPath)) {
-        $cfg = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $raw = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
+        try {
+            $cfg = $raw | ConvertFrom-Json
+        } catch {
+            # JSON では \ がエスケープ記号。Windowsのパスをそのまま貼ると壊れる。
+            throw @"
+$ConfigPath の書式が壊れています。
+
+JSON では「\」は特別な記号なので、Windowsのパスをそのまま貼ると読めません。
+バックスラッシュを2つずつ重ねてください。
+
+  誤: "dataRoot": "\\NAS-SERVER\share\taskboard\data"
+  正: "dataRoot": "\\\\NAS-SERVER\\share\\taskboard\\data"
+
+「/」で書く方法もあります（こちらは重ねる必要がありません）:
+  "dataRoot": "//NAS-SERVER/share/taskboard/data"
+
+元のエラー: $($_.Exception.Message)
+"@
+        }
     }
     $root = $DataRootOverride
-    if (-not $root -and $cfg -and $cfg.dataRoot) { $root = $cfg.dataRoot }
+    if (-not $root -and $cfg -and $cfg.dataRoot) { $root = [string]$cfg.dataRoot }
     if (-not $root) { $root = Join-Path $RepoRoot 'data\sample' }   # 既定はサンプル
     $actor = if ($cfg -and $cfg.actor) { $cfg.actor } else { $env:USERNAME }
-    return [pscustomobject]@{ DataRoot = $root; Actor = $actor }
+    return [pscustomobject]@{ DataRoot = $root; Actor = $actor; ConfigPath = $ConfigPath }
 }
 
-$Config   = Resolve-Config -ConfigPath $ConfigPath -DataRootOverride $DataRoot
-$DataRoot = $Config.DataRoot
-$Actor    = $Config.Actor
+# dataRoot が実際に使える場所を指しているかを確認し、駄目なら直し方まで示す。
+function Assert-DataRoot {
+    param([string]$Root, [string]$ConfigPath)
+    $where = if ($ConfigPath) { $ConfigPath } else { 'コマンドラインの -DataRoot' }
+
+    # 1) JSONのエスケープ崩れ。\b や \n が制御文字として紛れ込むと、
+    #    エラーも出ないまま存在しないパスになる。見た目では気づけないので明示する。
+    $ctrl = [regex]::Matches($Root, '[\x00-\x1F]')
+    if ($ctrl.Count) {
+        $vis = ($Root.ToCharArray() | ForEach-Object {
+            $c = [int]$_
+            if ($c -lt 32) { '<0x{0:X2}>' -f $c } else { $_ }
+        }) -join ''
+        throw @"
+$where の dataRoot に制御文字が混ざっています。
+
+  解釈されたパス: $vis
+
+JSON では「\」が特別な記号のため、「\b」「\n」「\t」などが
+別の文字に化けています。バックスラッシュを2つずつ重ねてください。
+
+  誤: "dataRoot": "\\NAS-SERVER\board\data"
+  正: "dataRoot": "\\\\NAS-SERVER\\board\\data"
+
+「/」で書く方法もあります:
+  "dataRoot": "//NAS-SERVER/board/data"
+"@
+    }
+
+    # 2) board.json そのものを指してしまっている場合は、親フォルダを教える
+    if ($Root -match '(?i)\.json$') {
+        $parent = Split-Path -Parent $Root
+        throw @"
+dataRoot にはファイルではなく「フォルダ」を指定してください。
+
+  今の指定: $Root
+  正しい値: $parent
+
+dataRoot は board.json が入っているフォルダを指します。
+"@
+    }
+
+    # 3) フォルダに到達できない
+    if (-not (Test-Path -LiteralPath $Root)) {
+        throw @"
+dataRoot のフォルダに接続できません。
+
+  指定されたパス: $Root
+  設定した場所  : $where
+
+確認してください:
+  - そのフォルダがNAS上に実在するか（エクスプローラーのアドレス欄に貼って確認）
+  - ネットワークに接続できているか / 共有にアクセス権があるか
+  - パスの綴り（JSONではバックスラッシュを2つずつ重ねます）
+"@
+    }
+
+    # 4) フォルダはあるが board.json が無い＝置き場所を1階層間違えている可能性が高い
+    if (-not (Test-Path -LiteralPath (Get-BoardPath $Root))) {
+        $hint = ''
+        # 一階層下に board.json があるなら、それが正解である可能性が高い
+        $sub = Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue |
+               Where-Object { Test-Path -LiteralPath ([System.IO.Path]::Combine($_.FullName, 'board.json')) } |
+               Select-Object -First 1
+        if ($sub) {
+            $hint = "`n`nもしかして、こちらではありませんか:`n  $($sub.FullName)"
+        }
+        throw @"
+指定されたフォルダに board.json がありません。
+
+  指定されたパス: $Root
+  探したファイル: $(Get-BoardPath $Root)
+
+dataRoot は「board.json が直接入っているフォルダ」を指定します。
+
+はじめて使う場合は、リポジトリの
+  data\template\board.json
+を そのフォルダへコピーしてください。weeks などは自動で作られます。$hint
+"@
+    }
+}
+
+$Config     = Resolve-Config -ConfigPath $ConfigPath -DataRootOverride $DataRoot
+$DataRoot   = $Config.DataRoot
+$Actor      = $Config.Actor
+
+Assert-DataRoot -Root $DataRoot -ConfigPath $Config.ConfigPath
 
 # 必要なサブフォルダ（weeks / .locks / backup）を毎回確認して作る。
 # board.json だけを置いた状態（data\template をNASにコピーした直後など）でも
 # 動くようにするため、board.json の有無にかかわらず実行する。冪等なので毎回でよい。
 Initialize-DataRoot $DataRoot
-if (-not (Test-Path -LiteralPath (Get-BoardPath $DataRoot))) {
-    Write-Host "board.json が $DataRoot にありません。data\template をコピーして使ってください。" -ForegroundColor Yellow
-}
+Write-Host "データの場所: $DataRoot" -ForegroundColor DarkGray
 try { Backup-DataDaily $DataRoot } catch { Write-Host "バックアップ警告: $($_.Exception.Message)" -ForegroundColor Yellow }
 
 # ---- WebView2 / WinForms アセンブリ ---------------------------------------

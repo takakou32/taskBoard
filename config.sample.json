@@ -1,9 +1,18 @@
 {
-  "_comment": "このファイルを config.local.json にコピーして各環境に合わせて編集してください。config.local.json は共有せず各PC（またはNAS上の共通設定として1つ）に置きます。",
+  "_1_使い方": "このファイルを config.local.json という名前でコピーし、dataRoot を書き換えてください。config.local.json は各環境ごとの設定なので、リポジトリには入りません。",
 
-  "dataRoot": "\\\\NAS-SERVER\\share\\taskboard\\data",
-  "_dataRoot_note": "データ本体（board.json と weeks フォルダ）を置く社内NAS上の共有パス。UNCパス（\\\\サーバ名\\共有名\\...）で指定。ローカルで試す場合は 'C:\\\\work\\\\taskBoard\\\\data\\\\sample' のように書きます。",
+  "_2_dataRootとは": "board.json が直接入っているフォルダを指定します。board.json 自体のパスではありません。weeks や backup などのフォルダはアプリが自動で作ります。",
+
+  "_3_書き方の注意": "JSON では「\\」が特別な記号です。Windowsのパスを貼るときは必ず2つずつ重ねてください。重ねないと、エラーも出ないまま別のパスに化けることがあります（例: \\board の \\b はバックスペース文字になります）。",
+
+  "_4_おすすめ": "迷ったら「/」で書いてください。重ねる必要がなく間違えません。下の dataRoot がその書き方です。",
+
+  "dataRoot": "//NAS-SERVER/share/taskboard/data",
+
+  "_5_バックスラッシュで書く場合": "\"dataRoot\": \"\\\\\\\\NAS-SERVER\\\\share\\\\taskboard\\\\data\"  ← 先頭は4つ、途中は2つずつ",
+
+  "_6_ローカルで試す場合": "\"dataRoot\": \"C:/work/taskboard-data\"",
 
   "actor": "",
-  "_actor_note": "操作者名。空の場合はWindowsのログインユーザー名を使います。履歴とロック表示に使われます。"
+  "_7_actorとは": "操作者名。空にするとWindowsのログインユーザー名を使います。履歴と「◯◯が編集中」の表示に出ます。"
 }
