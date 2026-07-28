@@ -15,6 +15,26 @@ const STATUSES = [
 
 const bridge = window.chrome && window.chrome.webview ? window.chrome.webview : null;
 
+/* 画面側で例外が起きても WebView2 の中では何も見えず、
+   「ボタンを押しても無反応」としか分からない。
+   握りつぶさずホストへ送り、利用者にも知らせる。 */
+function reportError(where, err) {
+  const msg = (err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err);
+  try { if (bridge) bridge.postMessage({ type: "clientError", where: where, message: msg }); } catch (e) { /* 送信自体が失敗しても落とさない */ }
+  try { toast("エラーが発生しました（" + where + "）"); } catch (e) { /* toast前の失敗は無視 */ }
+}
+
+window.addEventListener("error", (e) => reportError("script", e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => reportError("promise", e.reason));
+
+// 画面が丸ごと固まらないよう、操作ごとに包んで報告する
+function guard(where, fn) {
+  return function (...args) {
+    try { return fn.apply(this, args); }
+    catch (err) { reportError(where, err); }
+  };
+}
+
 let state = null;         // { board, week, weeks, view, connected }
 let filterGoalId = null;  // 目標レーンでの絞り込み（"__unlinked__" で紐づけなしのみ）
 let searchText = "";
@@ -88,7 +108,7 @@ function wireToolbar() {
     if (bridge) send({ type: "gotoCurrentWeek" });
     else toast("スタンドアロンでは今週固定です");
   };
-  document.getElementById("btnNewTask").onclick = () => openDrawer(null);
+  document.getElementById("btnNewTask").onclick = guard("新規タスク", () => openDrawer(null));
   document.getElementById("drawerClose").onclick = closeDrawer;
   document.getElementById("btnCancel").onclick = closeDrawer;
   // 背景の暗幕は3つのドロワーで共用。開いているものを閉じる。
@@ -173,7 +193,11 @@ function changeWeekBy(delta) {
 }
 
 /* ---------------- 描画 ---------------- */
-function render() {
+const render = guard("画面描画", function () {
+  renderInner();
+});
+
+function renderInner() {
   if (!state) return;
   renderToolbarState();
   renderMemo();
@@ -675,7 +699,7 @@ function visibleTasks() {
 /* ---------------- 詳細ドロワー（新規作成 / 編集 / 削除） ---------------- */
 let editingId = null;   // null = 新規作成モード
 
-function openTask(t) { openDrawer(t); }
+const openTask = guard("タスクを開く", function (t) { openDrawer(t); });
 
 function openDrawer(task) {
   if (state.week.closed) { toast("締め済みの週は編集できません"); return; }
@@ -723,7 +747,7 @@ function openDrawer(task) {
 
   // 担当者ピッカー。休止中でも既に担当しているなら表示する。
   const picker = document.getElementById("fAssignees");
-  const selected = new SetasArray(t.assignees);
+  const selected = new Set(asArray(t.assignees));
   const pickable = asArray(state.board.members).filter((m) => isActive(m) || selected.has(m.id));
   picker.replaceChildren(...pickable.map((m) => {
     const b = el("button", "pick" + (selected.has(m.id) ? " on" : ""));

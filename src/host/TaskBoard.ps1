@@ -378,6 +378,16 @@ function Invoke-UiMessage {
                 Send-State $script:CurrentWeekId
                 Send-Toast "継続目標を削除しました"
             }
+            'clientError' {
+                # 画面側の例外。WebView2 の中では見えないのでコンソールとログに残す。
+                $line = "[{0}] 画面側エラー ({1}): {2}" -f (Get-Date).ToString('HH:mm:ss'), $msg.where, $msg.message
+                Write-Host $line -ForegroundColor Red
+                try {
+                    $logDir = Join-Path $env:LOCALAPPDATA 'TaskBoard'
+                    if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+                    Add-Content -LiteralPath (Join-Path $logDir 'error.log') -Value $line -Encoding UTF8
+                } catch { }
+            }
             'openLink' {
                 Open-ExternalLink -Target $msg.url
             }
