@@ -412,6 +412,69 @@ function Remove-ContinuingGoal {
     }
 }
 
+# ---- メモ・連絡事項（board.json 側・週に属さない） -------------------------
+# 週をまたいで覚えておきたいことや、チームへの連絡を置く場所。
+# 週の締めでも消えず、常に画面上部に出る。
+function Add-Note {
+    param([string]$Root, [string]$Text, [string]$Actor = 'unknown')
+    if ([string]::IsNullOrWhiteSpace($Text)) { throw "メモの内容を入力してください。" }
+    Invoke-WithLock -Root $Root -Name 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        if (-not (Test-HasField $board 'notes')) {
+            $board | Add-Member -NotePropertyName notes -NotePropertyValue @() -Force
+        }
+        $note = [ordered]@{
+            id        = New-Id 'n'
+            text      = $Text.Trim()
+            author    = $Actor
+            createdAt = (Get-Date).ToString('yyyy-MM-dd')
+            pinned    = $false
+        }
+        # 新しいものを上に積む
+        $board.notes = @($note) + @($board.notes)
+        Write-JsonFile $path $board
+        return $note.id
+    }
+}
+
+function Update-Note {
+    param([string]$Root, [string]$NoteId, $Fields, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -Name 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        $note = $board.notes | Where-Object { $_.id -eq $NoteId } | Select-Object -First 1
+        if (-not $note) { throw "メモが見つかりません: $NoteId" }
+
+        if (Test-HasField $Fields 'text') {
+            if ([string]::IsNullOrWhiteSpace([string]$Fields.text)) { throw "メモは空にできません。" }
+            $note.text = ([string]$Fields.text).Trim()
+        }
+        if (Test-HasField $Fields 'pinned') {
+            if (-not ($note.PSObject.Properties.Name -contains 'pinned')) {
+                $note | Add-Member -NotePropertyName pinned -NotePropertyValue $false -Force
+            }
+            $note.pinned = [bool]$Fields.pinned
+        }
+        Write-JsonFile $path $board
+    }
+}
+
+function Remove-Note {
+    param([string]$Root, [string]$NoteId, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -Name 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        $before = @($board.notes).Count
+        $board.notes = @($board.notes | Where-Object { $_.id -ne $NoteId })
+        if (@($board.notes).Count -eq $before) { throw "メモが見つかりません: $NoteId" }
+        Write-JsonFile $path $board
+    }
+}
+
 # ---- メンバー（board.json 側） ---------------------------------------------
 # 退職・異動したメンバーは削除ではなく active=false（休止）を基本にする。
 # 削除すると過去の担当記録との対応が取れなくなるため。

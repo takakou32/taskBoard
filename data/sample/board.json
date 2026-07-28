@@ -21,5 +21,11 @@
   "continuingGoals": [
     { "id": "cg-docs", "key": "S", "title": "社内手順書の整備", "active": true, "totalDone": 14 },
     { "id": "cg-env",  "key": "T", "title": "検証環境の安定化", "active": true, "totalDone": 8 }
+  ],
+  "notes": [
+    { "id": "n-1", "text": "月末の請求処理は27日までに完了させること。締め日が変わりました。", "author": "田中", "createdAt": "2026-07-21", "pinned": true },
+    { "id": "n-2", "text": "定例会は毎週水曜15:00〜（会議室B）。議事録は \\\\NAS-SERVER\\share\\議事録 に置いています。", "author": "佐藤", "createdAt": "2026-07-13", "pinned": false },
+    { "id": "n-3", "text": "B社の窓口が8月から山田さんに変わります（yamada@example.co.jp）", "author": "鈴木", "createdAt": "2026-07-22", "pinned": false },
+    { "id": "n-4", "text": "新しい経費精算の手順はこちら https://example.co.jp/keihi/manual を参照してください。", "author": "中村", "createdAt": "2026-07-24", "pinned": false }
   ]
 }

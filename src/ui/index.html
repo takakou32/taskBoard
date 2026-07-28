@@ -33,6 +33,23 @@
     <button class="btn" id="bannerAction"></button>
   </div>
 
+  <!-- メモ・連絡事項（週をまたいで残る） -->
+  <section class="memo" id="memo" hidden>
+    <button class="memo-h" id="memoToggle" aria-expanded="true">
+      <span class="chev" id="memoChev">▾</span>
+      <span class="ttl">メモ・連絡事項</span>
+      <span class="cnt" id="memoCount"></span>
+      <span class="peek" id="memoPeek"></span>
+    </button>
+    <div class="memo-b" id="memoBody">
+      <div class="memo-list" id="memoList"></div>
+      <div class="memo-add">
+        <input type="text" id="memoNew" placeholder="覚えておきたいこと・連絡事項を書く" maxlength="200">
+        <button class="btn primary" id="memoAdd">追加</button>
+      </div>
+    </div>
+  </section>
+
   <div class="board-scroll" id="viewRoot">
     <div class="placeholder">読み込み中…</div>
   </div>

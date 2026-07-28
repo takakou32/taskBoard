@@ -76,6 +76,77 @@ body {
 
 .av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: none; }
 
+/* ---------- メモ・連絡事項 ---------- */
+.memo { flex: none; border-bottom: 1px solid var(--rule); background: var(--surface); }
+.memo[hidden] { display: none; }
+.memo-h {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 14px; background: transparent; border: none; cursor: pointer;
+  font-family: var(--font-ui); font-size: 12.5px; color: var(--ink); text-align: left;
+}
+.memo-h:hover { background: var(--surface-2); }
+.memo-h:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.memo-h .chev { color: var(--ink-3); font-size: 10px; width: 10px; flex: none; transition: transform .12s; }
+.memo-h .ttl { font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
+.memo-h .cnt {
+  font-family: var(--font-mono); font-size: 10.5px; font-variant-numeric: tabular-nums;
+  color: var(--ink-2); background: var(--surface-2); padding: 1px 7px; border-radius: 999px; flex: none;
+}
+/* 畳んでいるときだけ中身の触りを1行見せる */
+.memo-h .peek {
+  color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0; display: none;
+}
+.memo.collapsed .memo-h .peek { display: block; }
+.memo.collapsed .memo-b { display: none; }
+.memo.collapsed .memo-h .chev { transform: rotate(-90deg); }
+
+.memo-b { padding: 2px 14px 12px; display: flex; flex-direction: column; gap: 8px; }
+.memo-list { display: flex; flex-direction: column; gap: 5px; max-height: 190px; overflow-y: auto; }
+.note {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 7px 10px; border-radius: 6px; background: var(--paper);
+  border: 1px solid var(--rule); border-left: 3px solid var(--rule);
+}
+.note.pin { border-left-color: var(--st-doing); background: var(--st-doing-bg); }
+.note .pinbtn { flex: none; background: transparent; border: none; cursor: pointer; font-size: 12px; line-height: 1.5; padding: 0; color: var(--ink-3); }
+.note.pin .pinbtn { color: var(--st-doing); }
+.note .pinbtn:hover { color: var(--accent); }
+.note .txt {
+  flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.65; color: var(--ink);
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  padding: 1px 5px; font-family: var(--font-ui); resize: none; overflow: hidden;
+}
+.note .txt:hover { border-color: var(--rule); }
+.note .txt:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+/* 表示モード。長いURLでも折り返して全文が読めるようにする */
+.note .txt.view { cursor: text; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.note .lnk {
+  color: var(--accent); text-decoration: underline;
+  text-underline-offset: 2px; text-decoration-thickness: 1px;
+  cursor: pointer; overflow-wrap: anywhere;
+}
+.note .lnk:hover { text-decoration-thickness: 2px; }
+.note .lnk:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+.note .by {
+  flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums; white-space: nowrap; padding-top: 3px;
+}
+.note .del {
+  flex: none; background: transparent; border: none; cursor: pointer;
+  color: var(--ink-3); font-size: 12px; line-height: 1.5; padding: 0 2px;
+}
+.note .del:hover { color: var(--danger); }
+.memo-empty { font-size: 12px; color: var(--ink-3); padding: 4px 2px; }
+
+.memo-add { display: flex; gap: 8px; }
+.memo-add input {
+  flex: 1; min-width: 0; font-family: var(--font-ui); font-size: 12.5px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; padding: 6px 10px;
+}
+.memo-add input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+
 /* ---------- board ---------- */
 .board-scroll { flex: 1; overflow: auto; background: var(--paper); }
 .board {

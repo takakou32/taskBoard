@@ -248,6 +248,48 @@ $script:CurrentWeekId  = $null
 $script:LastStamp      = ''
 $script:HeldLockTaskId = $null
 
+# メモ内のリンクを外部アプリで開く。
+# WebView2 の中で直接開くとアプリ自体が別ページへ遷移してしまうため、
+# UI 側はクリックを横取りしてこちらへ渡す。
+function Open-ExternalLink {
+    param([string]$Target)
+    if ([string]::IsNullOrWhiteSpace($Target)) { return }
+    $t = $Target.Trim()
+
+    # 受け付ける形式だけを明示的に判定する。javascript: など他は開かない。
+    if ($t -match '^https?://') {
+        Start-Process $t
+        return
+    }
+    if ($t -match '^mailto:') {
+        Start-Process $t
+        return
+    }
+    if ($t -match '^[\w.+-]+@[\w-]+\.[\w.-]+$') {
+        Start-Process ("mailto:{0}" -f $t)
+        return
+    }
+    # UNC（\\サーバー\共有\...）とローカルパス（C:\...）
+    if ($t -match '^\\\\[^\\]' -or $t -match '^[A-Za-z]:\\') {
+        if (-not (Test-Path -LiteralPath $t)) {
+            throw "見つかりませんでした: $t`n（共有フォルダに接続できているか、綴りが正しいか確認してください）"
+        }
+        # 実行ファイルの類は開かず、場所を選択した状態でエクスプローラーを出すに留める。
+        # メモは誰でも書けるので、クリックが即実行にならないようにしておく。
+        $ext = ''
+        try { $ext = [System.IO.Path]::GetExtension($t).ToLowerInvariant() } catch { }
+        $risky = @('.exe','.bat','.cmd','.ps1','.psm1','.vbs','.vbe','.js','.jse','.wsf','.wsh',
+                   '.msi','.msp','.scr','.com','.pif','.lnk','.reg','.hta','.cpl','.jar')
+        if ($risky -contains $ext) {
+            Start-Process explorer.exe -ArgumentList ('/select,"{0}"' -f $t)
+        } else {
+            Start-Process explorer.exe -ArgumentList ('"{0}"' -f $t)
+        }
+        return
+    }
+    throw "この形式のリンクは開けません: $t"
+}
+
 function Invoke-UiMessage {
     param($msg)
     try {
@@ -329,6 +371,23 @@ function Invoke-UiMessage {
                 Remove-ContinuingGoal -Root $DataRoot -GoalId $msg.goalId -Actor $Actor
                 Send-State $script:CurrentWeekId
                 Send-Toast "継続目標を削除しました"
+            }
+            'openLink' {
+                Open-ExternalLink -Target $msg.url
+            }
+            'createNote' {
+                Add-Note -Root $DataRoot -Text $msg.text -Actor $Actor | Out-Null
+                Send-State $script:CurrentWeekId
+                Send-Toast "メモを追加しました"
+            }
+            'updateNote' {
+                Update-Note -Root $DataRoot -NoteId $msg.noteId -Fields $msg.fields -Actor $Actor
+                Send-State $script:CurrentWeekId
+            }
+            'deleteNote' {
+                Remove-Note -Root $DataRoot -NoteId $msg.noteId -Actor $Actor
+                Send-State $script:CurrentWeekId
+                Send-Toast "メモを削除しました"
             }
             'createMember' {
                 Add-BoardMember -Root $DataRoot -Fields $msg.fields -Actor $Actor | Out-Null
