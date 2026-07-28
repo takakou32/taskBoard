@@ -119,7 +119,8 @@ function wireToolbar() {
     else if (!document.getElementById("setDrawer").hidden) closeSettings();
   };
   document.getElementById("btnSave").onclick = saveDrawer;
-  document.getElementById("btnDelete").onclick = deleteDrawer;
+  document.getElementById("btnDelete").onclick = guard("削除", deleteDrawer);
+  document.getElementById("btnDuplicate").onclick = guard("複製", duplicateDrawer);
   document.getElementById("filterClear").onclick = clearFilter;
   document.getElementById("memoToggle").onclick = toggleMemo;
   document.getElementById("memoAdd").onclick = addNote;
@@ -720,6 +721,8 @@ function openDrawer(task) {
   document.getElementById("drawerTitle").textContent = task ? "タスクを編集" : "新規タスク";
   document.getElementById("btnSave").textContent = task ? "保存" : "作成";
   document.getElementById("btnDelete").hidden = !task;
+  // 複製は既存タスクにだけ意味がある
+  document.getElementById("btnDuplicate").hidden = !task;
 
   document.getElementById("fTitle").value = t.title || "";
   document.getElementById("fDesc").value = t.description || "";
@@ -800,6 +803,35 @@ function saveDrawer() {
   if (editingId) send({ type: "updateTask", weekId: state.week.id, taskId: editingId, fields });
   else send({ type: "createTask", weekId: state.week.id, fields });
   closeDrawer();
+}
+
+// 開いているタスクを複製する。未保存の編集があれば先に確認する。
+function duplicateDrawer() {
+  if (!editingId) return;
+  const t = asArray(state.week.tasks).find((x) => x.id === editingId);
+  if (!t) return;
+  // 担当者は並び順が違うだけで別物と見なさないよう、そろえてから比べる
+  const norm = (o) => JSON.stringify(Object.assign({}, o, { assignees: asArray(o.assignees).slice().sort() }));
+  const edited = norm(collectForm()) !== norm(currentFormOf(t));
+  if (edited && !confirm("保存していない変更があります。\n複製すると、その変更は反映されません。続けますか？")) return;
+  if (!bridge) { toast("プレビューでは複製されません"); closeDrawer(); return; }
+  send({ type: "duplicateTask", weekId: state.week.id, taskId: editingId });
+  closeDrawer();
+}
+
+// 保存済みの内容をフォームと同じ形にそろえる（未保存かどうかの判定用）
+function currentFormOf(t) {
+  return {
+    title: t.title || "",
+    description: t.description || "",
+    status: t.status,
+    due: t.due || null,
+    priority: t.priority || "normal",
+    projectId: t.projectId || null,
+    goalId: t.goalId || null,
+    continuingGoalId: t.continuingGoalId || null,
+    assignees: asArray(t.assignees),
+  };
 }
 
 function deleteDrawer() {

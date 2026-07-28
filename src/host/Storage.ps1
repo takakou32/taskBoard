@@ -256,6 +256,48 @@ function Update-Task {
     }
 }
 
+# タスクを複製する。元のすぐ後ろに置くので、列の中で隣り合って見える。
+# 履歴は引き継がず、複製した記録だけを持たせる。
+# 持ち越し印（carriedFrom）も引き継がない。新しく作った作業なので。
+function Copy-Task {
+    param([string]$Root, [string]$WeekId, [string]$TaskId, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -Name $WeekId -Action {
+        $path = Get-WeekPath $Root $WeekId
+        $week = Read-JsonFile $path
+        if (-not $week) { throw "週が見つかりません: $WeekId" }
+        if ($week.closed) { throw "締め済みの週は編集できません: $WeekId" }
+
+        $src = $week.tasks | Where-Object { $_.id -eq $TaskId } | Select-Object -First 1
+        if (-not $src) { throw "タスクが見つかりません: $TaskId" }
+
+        $copy = [ordered]@{
+            id               = New-Id 't'
+            title            = "{0}（コピー）" -f $src.title
+            status           = $src.status
+            goalId           = $src.goalId
+            continuingGoalId = $src.continuingGoalId
+            assignees        = @($src.assignees)
+            due              = $src.due
+            priority         = $src.priority
+            projectId        = $src.projectId
+            description      = if ($src.PSObject.Properties.Name -contains 'description') { $src.description } else { '' }
+            carriedFrom      = $null
+            history          = @()
+        }
+        Add-ItemHistory -Item $copy -Text ("{0}: 「{1}」から複製" -f $Actor, $src.title)
+
+        # 元の直後に差し込む
+        $out = New-Object System.Collections.ArrayList
+        foreach ($t in @($week.tasks)) {
+            [void]$out.Add($t)
+            if ($t.id -eq $TaskId) { [void]$out.Add($copy) }
+        }
+        $week.tasks = @($out.ToArray())
+        Write-JsonFile $path $week
+        return $copy.id
+    }
+}
+
 function Remove-Task {
     param([string]$Root, [string]$WeekId, [string]$TaskId, [string]$Actor = 'unknown')
     Invoke-WithLock -Root $Root -LockName $WeekId -Action {

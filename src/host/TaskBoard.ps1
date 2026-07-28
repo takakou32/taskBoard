@@ -331,6 +331,11 @@ function Invoke-UiMessage {
                 Send-State $msg.weekId
                 Send-Toast "保存しました"
             }
+            'duplicateTask' {
+                Copy-Task -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -Actor $Actor | Out-Null
+                Send-State $msg.weekId
+                Send-Toast "複製しました"
+            }
             'deleteTask' {
                 Remove-Task -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -Actor $Actor
                 Send-State $msg.weekId
