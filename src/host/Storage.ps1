@@ -748,15 +748,51 @@ function Add-ItemHistory {
     # NoteProperty ができてしまい、JSON にはキー側（空のまま）が出力される。
     # 辞書はキーとして直接扱う。
     if ($Item -is [System.Collections.IDictionary]) {
-        $cur = if ($Item.Contains('history')) { @($Item['history']) } else { @() }
-        $Item['history'] = $cur + $line
+        $cur = @()
+        if ($Item.Contains('history')) { $cur = @($Item['history']) }
+        # 必ず配列で入れる。@() を付けないと1件目のとき文字列になる（下の注記参照）
+        $Item['history'] = @($cur + $line)
         return
     }
     # JSON から読んだ PSCustomObject 側
     if (-not ($Item.PSObject.Properties.Name -contains 'history')) {
         $Item | Add-Member -NotePropertyName history -NotePropertyValue @() -Force
     }
-    $Item.history = @($Item.history) + $line
+    $Item.history = @(@($Item.history) + $line)
+}
+
+# 注記:
+#   ここは以前 `$cur = if (...) { @(...) } else { @() }` と書いていて不具合になった。
+#   PowerShell は if ブロックが空配列を返すと、それを $null に潰してしまう。
+#   その結果 $cur が $null になり、`$null + "文字列"` が配列の連結ではなく
+#   文字列連結として評価され、history が配列でなく文字列として保存されていた。
+#   すると UI 側の history.join() が例外になり、そのカードを開けなくなる。
+#   同じ理由で、配列を作る箇所では最後に @() で包んでおくこと。
+
+# 既に文字列として保存されてしまった history を配列に直す。
+# 不具合修正前に作られたタスクを開けるようにするための後始末。
+function Repair-TaskHistory {
+    param([string]$Root)
+    $fixed = 0
+    foreach ($w in (Get-WeekList $Root)) {
+        $path = Get-WeekPath $Root $w.id
+        $week = Read-JsonFile $path
+        if (-not $week) { continue }
+        $touched = $false
+        foreach ($t in @($week.tasks)) {
+            if (-not ($t.PSObject.Properties.Name -contains 'history')) { continue }
+            if ($null -eq $t.history) { continue }
+            if ($t.history -is [string]) {
+                $t.history = @($t.history)
+                $touched = $true
+                $fixed++
+            }
+        }
+        if ($touched) {
+            Invoke-WithLock -Root $Root -Name $w.id -Action { Write-JsonFile $path $week }
+        }
+    }
+    return $fixed
 }
 
 # ---- 週の締め --------------------------------------------------------------

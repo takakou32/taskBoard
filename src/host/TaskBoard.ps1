@@ -148,6 +148,12 @@ Initialize-DataRoot $DataRoot
 Write-Host "データの場所: $DataRoot" -ForegroundColor DarkGray
 try { Backup-DataDaily $DataRoot } catch { Write-Host "バックアップ警告: $($_.Exception.Message)" -ForegroundColor Yellow }
 
+# 不具合で history が文字列として保存されたタスクを配列に直す。該当が無ければ何もしない。
+try {
+    $repaired = Repair-TaskHistory $DataRoot
+    if ($repaired) { Write-Host "$repaired 件のタスクの履歴を修復しました。" -ForegroundColor Yellow }
+} catch { Write-Host "履歴の修復に失敗: $($_.Exception.Message)" -ForegroundColor Yellow }
+
 # ---- WebView2 / WinForms アセンブリ ---------------------------------------
 Add-Type -Namespace TB -Name Native -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]

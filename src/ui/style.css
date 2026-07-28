@@ -76,6 +76,29 @@ body {
 
 .av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: none; }
 
+/* ---------- 絞り込み中の表示 ---------- */
+/* 絞り込みで盤面が空になったとき「消えた」と誤解されないよう、
+   何で絞っているかと解除手段を必ず見せる。 */
+.filterbar {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 7px 14px; background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent);
+}
+.filterbar[hidden] { display: none; }
+.fb-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--accent); font-weight: 700; flex: none;
+}
+.fb-name { font-size: 12.5px; font-weight: 700; color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-hit { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); font-variant-numeric: tabular-nums; flex: none; }
+.filterbar .btn { margin-left: auto; flex: none; }
+
+/* 絞り込みや検索の結果が0件のときに列へ出す説明 */
+.col-empty {
+  font-size: 11.5px; color: var(--ink-3); text-align: center;
+  padding: 14px 8px; border: 1px dashed var(--rule); border-radius: 6px;
+}
+
 /* ---------- メモ・連絡事項 ---------- */
 .memo { flex: none; border-bottom: 1px solid var(--rule); background: var(--surface); }
 .memo[hidden] { display: none; }

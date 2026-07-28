@@ -100,6 +100,7 @@ function wireToolbar() {
   };
   document.getElementById("btnSave").onclick = saveDrawer;
   document.getElementById("btnDelete").onclick = deleteDrawer;
+  document.getElementById("filterClear").onclick = clearFilter;
   document.getElementById("memoToggle").onclick = toggleMemo;
   document.getElementById("memoAdd").onclick = addNote;
   document.getElementById("memoNew").addEventListener("keydown", (e) => {
@@ -176,6 +177,7 @@ function render() {
   if (!state) return;
   renderToolbarState();
   renderMemo();
+  renderFilterBar();
   const root = document.getElementById("viewRoot");
   if (state.view === "assignee") root.replaceChildren(renderAssigneeView());
   else if (state.view === "retro") root.replaceChildren(renderRetroView());
@@ -240,6 +242,12 @@ function renderBoard() {
     zone.dataset.status = st.key;
     wireDropzone(zone);
     for (const t of colTasks) zone.appendChild(renderCard(t));
+    // 絞り込みで0件になった列は、空なのか隠れているのかを区別できるようにする
+    if (!colTasks.length && (filterGoalId || searchText)) {
+      const em = el("div", "col-empty");
+      em.textContent = "絞り込みに該当なし";
+      zone.appendChild(em);
+    }
     if (st.key === "todo" && !state.week.closed) {
       const add = el("button", "ghost-add");
       add.textContent = "＋ カードを追加";
@@ -258,8 +266,8 @@ function renderGoalLane() {
   title.innerHTML = '<span class="t">今週の目標</span><span class="s">' + esc(shortWeek(state.week.id)) + "</span>";
   lane.appendChild(title);
 
-  const weekGoals = state.week.goals || [];
-  const tasks = state.week.tasks || [];
+  const weekGoals = asArray(state.week.goals);
+  const tasks = asArray(state.week.tasks);
   for (const g of weekGoals) {
     const linked = tasks.filter((t) => t.goalId === g.id);
     const done = linked.filter((t) => t.status === "done").length;
@@ -296,7 +304,7 @@ function renderGoalLane() {
     lane.appendChild(addGoal);
   }
 
-  const contGoals = (state.board.continuingGoals || []).filter(isActive);
+  const contGoals = asArray(state.board.continuingGoals).filter(isActive);
   if (contGoals.length || !state.readOnly) {
     const sep = el("div", "lane-sep");
     sep.textContent = "継続目標";
@@ -360,7 +368,7 @@ function renderCard(t) {
   due.textContent = fmtDue(t);
   meta.appendChild(due);
   meta.appendChild(el("span", "sp"));
-  for (const id of (t.assignees || [])) {
+  for (const id of asArray(t.assignees)) {
     const m = memberById(id);
     if (m) meta.appendChild(avatar(m));
   }
@@ -372,11 +380,11 @@ function renderCard(t) {
 
 function goalTagFor(t) {
   if (t.goalId) {
-    const g = (state.week.goals || []).find((x) => x.id === t.goalId);
+    const g = asArray(state.week.goals).find((x) => x.id === t.goalId);
     if (g) return chipTag(g.key, false);
   }
   if (t.continuingGoalId) {
-    const c = (state.board.continuingGoals || []).find((x) => x.id === t.continuingGoalId);
+    const c = asArray(state.board.continuingGoals).find((x) => x.id === t.continuingGoalId);
     if (c) return chipTag(c.key, true);
   }
   return null;
@@ -387,8 +395,8 @@ function renderAssigneeView() {
   const wrap = el("div", "lanes");
   const tasks = visibleTasks();
   // 有効なメンバー＋休止中でもこの週にタスクを持っている人（作業を隠さない）
-  const members = (state.board.members || []).filter(
-    (m) => isActive(m) || tasks.some((t) => (t.assignees || []).includes(m.id))
+  const members = asArray(state.board.members).filter(
+    (m) => isActive(m) || tasks.some((t) => asArray(t.assignees).includes(m.id))
   );
 
   const head = el("div", "lane-head");
@@ -403,7 +411,7 @@ function renderAssigneeView() {
 
   // 各メンバーの行。担当者が複数いるタスクはそれぞれの行に出す。
   for (const m of members) {
-    const mine = tasks.filter((t) => (t.assignees || []).includes(m.id));
+    const mine = tasks.filter((t) => asArray(t.assignees).includes(m.id));
     const overdue = mine.filter((t) => isOverdue(t)).length;
     const lane = el("div", "lane" + (overdue ? " over" : ""));
 
@@ -426,7 +434,7 @@ function renderAssigneeView() {
   }
 
   // 担当者未設定
-  const none = tasks.filter((t) => !(t.assignees || []).length);
+  const none = tasks.filter((t) => !asArray(t.assignees).length);
   if (none.length) {
     const lane = el("div", "lane");
     const who = el("div", "who");
@@ -572,7 +580,7 @@ function clearInsertLine(zone) {
 
 // 列をまたいだら状態変更、同じ列なら並び替え。両方なら状態変更のあと並び替える。
 function dropTask(taskId, toStatus, beforeTaskId) {
-  const t = (state.week.tasks || []).find((x) => x.id === taskId);
+  const t = asArray(state.week.tasks).find((x) => x.id === taskId);
   if (!t) return;
   const statusChanged = t.status !== toStatus;
 
@@ -599,7 +607,7 @@ function dropTask(taskId, toStatus, beforeTaskId) {
 
 // プレビュー用のローカル並び替え（ホスト側の Set-TaskOrder と同じ規則）
 function reorderLocal(taskId, beforeTaskId) {
-  const all = state.week.tasks || [];
+  const all = asArray(state.week.tasks);
   const moving = all.find((x) => x.id === taskId);
   if (!moving) return;
   const rest = all.filter((x) => x.id !== taskId);
@@ -619,8 +627,42 @@ function toggleFilter(id) {
   render();
 }
 
+function clearFilter() {
+  filterGoalId = null;
+  searchText = "";
+  document.getElementById("search").value = "";
+  render();
+}
+
+// 何で絞り込んでいるかの表示名
+function filterLabel() {
+  if (filterGoalId === "__unlinked__") return "目標に紐づかないタスク";
+  const g = asArray(state.week.goals).find((x) => x.id === filterGoalId);
+  if (g) return g.key + " ・ " + g.title;
+  const c = asArray(state.board.continuingGoals).find((x) => x.id === filterGoalId);
+  if (c) return c.key + " ・ " + c.title + "（継続目標）";
+  return "選択中の目標";
+}
+
+function renderFilterBar() {
+  const bar = document.getElementById("filterBar");
+  const active = !!filterGoalId || !!searchText;
+  bar.hidden = !active;
+  if (!active) return;
+
+  const parts = [];
+  if (filterGoalId) parts.push(filterLabel());
+  if (searchText) parts.push("検索: " + searchText);
+  document.getElementById("filterName").textContent = parts.join(" / ");
+
+  const hit = visibleTasks().length;
+  const total = asArray(state.week.tasks).length;
+  document.getElementById("filterHit").textContent =
+    hit === 0 ? "該当なし（全 " + total + " 件）" : hit + " / " + total + " 件";
+}
+
 function visibleTasks() {
-  let tasks = state.week.tasks || [];
+  let tasks = asArray(state.week.tasks);
   if (filterGoalId === "__unlinked__") tasks = tasks.filter((t) => !t.goalId && !t.continuingGoalId);
   else if (filterGoalId) tasks = tasks.filter((t) => t.goalId === filterGoalId || t.continuingGoalId === filterGoalId);
   if (searchText) {
@@ -664,8 +706,8 @@ function openDrawer(task) {
 
   // 目標: 週の大目標 → 継続目標 → 紐づけなし
   const goalOpts = [{ value: "", label: "（紐づけなし）" }];
-  for (const g of state.week.goals || []) goalOpts.push({ value: "g:" + g.id, label: g.key + " ・ " + g.title });
-  for (const c of (state.board.continuingGoals || []).filter((x) => isActive(x) || x.id === t.continuingGoalId)) {
+  for (const g of asArray(state.week.goals)) goalOpts.push({ value: "g:" + g.id, label: g.key + " ・ " + g.title });
+  for (const c of asArray(state.board.continuingGoals).filter((x) => isActive(x) || x.id === t.continuingGoalId)) {
     goalOpts.push({ value: "c:" + c.id, label: c.key + " ・ " + c.title + "（継続）" });
   }
   const goalVal = t.goalId ? "g:" + t.goalId : t.continuingGoalId ? "c:" + t.continuingGoalId : "";
@@ -673,7 +715,7 @@ function openDrawer(task) {
 
   // 休止中の案件は選択肢から外すが、既に紐づいているものは残す（勝手に外さない）
   const projOpts = [{ value: "", label: "（なし）" }];
-  for (const p of (state.board.projects || [])) {
+  for (const p of asArray(state.board.projects)) {
     if (!isActive(p) && p.id !== t.projectId) continue;
     projOpts.push({ value: p.id, label: p.name + (isActive(p) ? "" : "（休止中）") });
   }
@@ -681,8 +723,8 @@ function openDrawer(task) {
 
   // 担当者ピッカー。休止中でも既に担当しているなら表示する。
   const picker = document.getElementById("fAssignees");
-  const selected = new Set(t.assignees || []);
-  const pickable = (state.board.members || []).filter((m) => isActive(m) || selected.has(m.id));
+  const selected = new SetasArray(t.assignees);
+  const pickable = asArray(state.board.members).filter((m) => isActive(m) || selected.has(m.id));
   picker.replaceChildren(...pickable.map((m) => {
     const b = el("button", "pick" + (selected.has(m.id) ? " on" : ""));
     b.type = "button";
@@ -693,9 +735,9 @@ function openDrawer(task) {
     return b;
   }));
 
-  // 履歴
+  // 履歴。不具合で文字列として保存されたデータでも開けるよう配列に正規化する
   const histWrap = document.getElementById("histWrap");
-  const hist = t.history || [];
+  const hist = asArray(t.history);
   histWrap.hidden = hist.length === 0;
   document.getElementById("fHistory").textContent = hist.join("\n");
 
@@ -738,7 +780,7 @@ function saveDrawer() {
 
 function deleteDrawer() {
   if (!editingId) return;
-  const t = (state.week.tasks || []).find((x) => x.id === editingId);
+  const t = asArray(state.week.tasks).find((x) => x.id === editingId);
   if (!confirm("「" + (t ? t.title : "このタスク") + "」を削除します。よろしいですか？")) return;
   if (!bridge) { toast("プレビューでは削除されません"); closeDrawer(); return; }
   send({ type: "deleteTask", weekId: state.week.id, taskId: editingId });
@@ -753,7 +795,7 @@ function openGoalDrawer(g) {
   if (state.readOnly) { toast("共有フォルダに書き込めないため、閲覧のみです"); return; }
   editingGoalId = g.id;
 
-  const linked = (state.week.tasks || []).filter((t) => t.goalId === g.id);
+  const linked = asArray(state.week.tasks).filter((t) => t.goalId === g.id);
   document.getElementById("goalDrawerTitle").textContent = g.key + " の目標を編集";
   document.getElementById("gTitle").value = g.title || "";
   document.getElementById("gStatus").value = g.status || "running";
@@ -787,8 +829,8 @@ function saveGoalDrawer() {
 }
 
 function deleteGoalDrawer() {
-  const g = (state.week.goals || []).find((x) => x.id === editingGoalId);
-  const n = (state.week.tasks || []).filter((t) => t.goalId === editingGoalId).length;
+  const g = asArray(state.week.goals).find((x) => x.id === editingGoalId);
+  const n = asArray(state.week.tasks).filter((t) => t.goalId === editingGoalId).length;
   const msg = "「" + (g ? g.title : "この目標") + "」を削除します。"
     + (n ? "\n紐づくタスク " + n + " 件は残り、紐づけだけが外れます。" : "") + "\nよろしいですか？";
   if (!confirm(msg)) return;
@@ -813,7 +855,7 @@ function closeContDrawer() {
 
 function renderContList() {
   const list = document.getElementById("contList");
-  const goals = state.board.continuingGoals || [];
+  const goals = asArray(state.board.continuingGoals);
   if (!goals.length) {
     const p = el("p", "hint");
     p.textContent = "まだ継続目標がありません。";
@@ -913,7 +955,7 @@ function renderMemo() {
 
 // 目立たせたいものを上に。同じ扱いなら新しい順（配列の順序を保つ）。
 function sortedNotes() {
-  const notes = (state.board.notes || []).slice();
+  const notes = asArray(state.board.notes).slice();
   return notes.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
 }
 
@@ -1106,7 +1148,7 @@ function renderSettings() {
 
 function renderMemberList() {
   const list = document.getElementById("memberList");
-  const members = state.board.members || [];
+  const members = asArray(state.board.members);
   if (!members.length) {
     const p = el("p", "hint");
     p.textContent = "まだメンバーがいません。";
@@ -1196,14 +1238,14 @@ function confirmDeleteMember(m) {
 
 // 現在読み込んでいる週のぶんだけ数える（全期間はホスト側の loadUsage が持つ）
 function countAssigned(memberId) {
-  const tasks = state.week.tasks || [];
-  const n = tasks.filter((t) => (t.assignees || []).includes(memberId)).length;
+  const tasks = asArray(state.week.tasks);
+  const n = tasks.filter((t) => asArray(t.assignees).includes(memberId)).length;
   return state.week.closed ? { unclosed: 0, closedOnly: n } : { unclosed: n, closedOnly: 0 };
 }
 
 function renderProjectList() {
   const list = document.getElementById("projectList");
-  const projects = state.board.projects || [];
+  const projects = asArray(state.board.projects);
   if (!projects.length) {
     const p = el("p", "hint");
     p.textContent = "まだ案件がありません。";
@@ -1238,7 +1280,7 @@ function renderProjectList() {
     const del = el("button", "btn danger");
     del.textContent = "削除";
     del.onclick = () => {
-      const n = (state.week.tasks || []).filter((t) => t.projectId === p.id).length;
+      const n = asArray(state.week.tasks).filter((t) => t.projectId === p.id).length;
       let msg = "案件「" + p.name + "」を削除します。";
       if (n) msg += "\n今週のタスク " + n + " 件から紐づけが外れます（締めた週の記録は変わりません）。";
       msg += "\n\n終わった案件なら「休止する」をお勧めします。よろしいですか？";
@@ -1273,10 +1315,18 @@ function sendMsg(msg) {
   send(msg);
 }
 
+// 配列であることを保証する。PowerShell 側の書き出し方によっては
+// 1件しかない配列が単体の値になって届くことがあるため、受け側でも守っておく。
+function asArray(v) {
+  if (Array.isArray(v)) return v;
+  if (v === null || v === undefined || v === "") return [];
+  return [v];
+}
+
 // active が未設定の既存データは「有効」とみなす
 function isActive(x) { return !x || x.active !== false; }
-function activeMembers() { return (state.board.members || []).filter(isActive); }
-function activeProjects() { return (state.board.projects || []).filter(isActive); }
+function activeMembers() { return asArray(state.board.members).filter(isActive); }
+function activeProjects() { return asArray(state.board.projects).filter(isActive); }
 
 /* ---------------- 週の締めダイアログ ---------------- */
 const judgements = {};        // goalId -> 'achieved' | 'carried'
@@ -1431,7 +1481,7 @@ function chip(text, extra) { const c = el("span", "chip" + (extra ? " " + extra 
 function chipTag(key, isBg) { const c = el("span", "gtag" + (isBg ? " bg" : "")); c.textContent = key; return c; }
 function avatar(m) { const a = el("span", "av"); a.style.background = m.color; a.textContent = m.initial; a.title = m.name; return a; }
 function placeholder(text) { const p = el("div", "placeholder"); p.textContent = text; return p; }
-function memberById(id) { return (state.board.members || []).find((m) => m.id === id); }
+function memberById(id) { return asArray(state.board.members).find((m) => m.id === id); }
 function statusLabel(k) { const s = STATUSES.find((x) => x.key === k); return s ? s.label : k; }
 function statusJa(s) { return { running: "進行中", achieved: "達成", carried: "持ち越し" }[s] || s; }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
