@@ -448,6 +448,27 @@ function Invoke-UiMessage {
                 Set-TaskOrder -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -BeforeTaskId $msg.beforeTaskId -Actor $Actor
                 Send-State $msg.weekId
             }
+            'checkReopen' {
+                # 解除したら何が起きるかを先に返す（確認画面用。データは変えない）
+                $c = Test-WeekReopen -Root $DataRoot -WeekId $msg.weekId
+                Send-ToUi @{
+                    type = 'reopenCheck'; weekId = $msg.weekId
+                    canReopen = [bool]$c.canReopen; reason = [string]$c.reason
+                    nextWeekId = [string]$c.nextWeekId
+                    removeTasks = @($c.removeTasks); keepTasks = @($c.keepTasks)
+                    removeGoals = [int]$c.removeGoals
+                    closedAt = [string]$c.closedAt; closedBy = [string]$c.closedBy
+                }
+            }
+            'reopenWeek' {
+                $r = Resume-Week -Root $DataRoot -WeekId $msg.weekId -Actor $Actor
+                $script:CurrentWeekId = $msg.weekId
+                Send-State $msg.weekId
+                $t = "$($msg.weekId) の締めを解除しました"
+                if ($r.removed) { $t += "（次週から $($r.removed) 件を撤去）" }
+                if ($r.kept)    { $t += "。着手済みの $($r.kept) 件は残しました" }
+                Send-Toast $t
+            }
             'closeWeek' {
                 # JS の judgements は PSCustomObject で届くのでハッシュに詰め替える
                 $judge = @{}

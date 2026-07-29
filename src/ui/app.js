@@ -66,6 +66,9 @@ function handleHostMessage(msg) {
     case "retro":
       if (state) { state.retro = msg.weeks || []; render(); }
       break;
+    case "reopenCheck":
+      showReopenDialog(msg);
+      break;
     case "toast":
       toast(msg.text);
       break;
@@ -152,7 +155,10 @@ function wireToolbar() {
     if (e.key === "Enter") { e.preventDefault(); addContGoal(); }
   });
 
-  document.getElementById("btnCloseWeek").onclick = openCloseDialog;
+  document.getElementById("btnCloseWeek").onclick = guard("週を締める", openCloseDialog);
+  document.getElementById("reopenCancel").onclick = closeReopenDialog;
+  document.getElementById("reopenScrim").onclick = closeReopenDialog;
+  document.getElementById("reopenConfirm").onclick = guard("締めの解除", confirmReopen);
   document.getElementById("closeCancel").onclick = closeCloseDialog;
   document.getElementById("closeScrim").onclick = closeCloseDialog;
   document.getElementById("closeConfirm").onclick = confirmClose;
@@ -163,6 +169,7 @@ function wireToolbar() {
     else if (!document.getElementById("contDrawer").hidden) closeContDrawer();
     else if (!document.getElementById("setDrawer").hidden) closeSettings();
     else if (!document.getElementById("closeModal").hidden) closeCloseDialog();
+    else if (!document.getElementById("reopenModal").hidden) closeReopenDialog();
   });
   document.getElementById("search").addEventListener("input", (e) => {
     searchText = e.target.value.trim();
@@ -240,13 +247,24 @@ function renderToolbarState() {
   }
   banner.classList.remove("warn");
 
+  // 締め済みの週は編集できないので、その旨と解除の導線を出す
+  if (w.closed) {
+    banner.classList.add("show");
+    document.getElementById("bannerText").textContent =
+      w.id + " は締め済みです。記録として固定されているため編集できません。";
+    const act = document.getElementById("bannerAction");
+    act.textContent = "締めを解除";
+    act.onclick = guard("締めの解除", askReopen);
+    return;
+  }
+
   // 締め忘れバナー
   if (state.needsClose) {
     banner.classList.add("show");
     document.getElementById("bannerText").textContent = w.id + " が未締めです。達成／持ち越しを判定してください。";
     const act = document.getElementById("bannerAction");
     act.textContent = "週を締める";
-    act.onclick = openCloseDialog;
+    act.onclick = guard("週を締める", openCloseDialog);
   } else {
     banner.classList.remove("show");
   }
@@ -1383,6 +1401,101 @@ function asArray(v) {
 function isActive(x) { return !x || x.active !== false; }
 function activeMembers() { return asArray(state.board.members).filter(isActive); }
 function activeProjects() { return asArray(state.board.projects).filter(isActive); }
+
+/* ---------------- 締めの解除 ---------------- */
+// ホストに「解除したら何が起きるか」を問い合わせ、結果が届いたら確認画面を出す
+function askReopen() {
+  if (!bridge) { toast("プレビューでは解除できません"); return; }
+  send({ type: "checkReopen", weekId: state.week.id });
+}
+
+function showReopenDialog(c) {
+  const body = document.getElementById("reopenBody");
+  body.replaceChildren();
+
+  document.getElementById("reopenTitle").textContent = c.weekId + " の締めを解除";
+  const sub = [];
+  if (c.closedAt) sub.push(c.closedAt + " に " + (c.closedBy || "不明") + " が締めました");
+  document.getElementById("reopenSub").textContent = sub.join(" / ");
+
+  const confirmBtn = document.getElementById("reopenConfirm");
+
+  if (!c.canReopen) {
+    body.appendChild(noteBlock("warn", c.reason));
+    confirmBtn.hidden = true;
+  } else {
+    confirmBtn.hidden = false;
+    body.appendChild(noteBlock("", c.weekId + " をもう一度編集できる状態に戻します。この週の目標は「進行中」に戻ります。"));
+
+    if (c.reason) body.appendChild(noteBlock("warn", c.reason));
+
+    const remove = asArray(c.removeTasks);
+    const keep = asArray(c.keepTasks);
+
+    if (c.nextWeekId) {
+      if (remove.length) {
+        body.appendChild(listBlock(
+          c.nextWeekId + " から取り消すもの（" + remove.length + "件）",
+          remove,
+          "締めたときに運ばれた分です。まだ誰も手を付けていないので取り消します。"
+        ));
+      }
+      if (keep.length) {
+        body.appendChild(listBlock(
+          c.nextWeekId + " に残すもの（" + keep.length + "件）",
+          keep,
+          "着手済み・編集済みのため取り消しません。不要なら次週で手動で削除してください。"
+        ));
+      }
+      if (!remove.length && !keep.length) {
+        body.appendChild(noteBlock("", c.nextWeekId + " に持ち越したものはありません。"));
+      }
+      if (c.removeGoals) {
+        body.appendChild(noteBlock("", "持ち越した目標 " + c.removeGoals + " 件も、残すタスクが無ければ " + c.nextWeekId + " から取り消します。"));
+      }
+    }
+  }
+
+  document.getElementById("reopenScrim").hidden = false;
+  document.getElementById("reopenModal").hidden = false;
+}
+
+function noteBlock(kind, text) {
+  const d = el("div", "rp-note" + (kind ? " " + kind : ""));
+  d.textContent = text;
+  return d;
+}
+
+function listBlock(title, items, hint) {
+  const wrap = el("div", "rp-sec");
+  const h = el("div", "rp-h");
+  h.textContent = title;
+  wrap.appendChild(h);
+  const ul = el("ul", "rp-list");
+  for (const it of items) {
+    const li = el("li");
+    li.textContent = it;
+    ul.appendChild(li);
+  }
+  wrap.appendChild(ul);
+  if (hint) {
+    const p = el("div", "rp-hint");
+    p.textContent = hint;
+    wrap.appendChild(p);
+  }
+  return wrap;
+}
+
+function closeReopenDialog() {
+  document.getElementById("reopenScrim").hidden = true;
+  document.getElementById("reopenModal").hidden = true;
+}
+
+function confirmReopen() {
+  if (!bridge) { closeReopenDialog(); return; }
+  send({ type: "reopenWeek", weekId: state.week.id });
+  closeReopenDialog();
+}
 
 /* ---------------- 週の締めダイアログ ---------------- */
 const judgements = {};        // goalId -> 'achieved' | 'carried'

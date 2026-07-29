@@ -213,6 +213,21 @@
     </div>
   </aside>
 
+  <!-- 締めの解除ダイアログ -->
+  <div class="scrim" id="reopenScrim" hidden></div>
+  <div class="modal" id="reopenModal" hidden role="dialog" aria-label="締めを解除">
+    <div class="modal-h">
+      <div class="t" id="reopenTitle">締めを解除</div>
+      <div class="s" id="reopenSub"></div>
+    </div>
+    <div class="modal-b" id="reopenBody"></div>
+    <div class="modal-f">
+      <span class="spacer"></span>
+      <button class="btn" id="reopenCancel">やめる</button>
+      <button class="btn primary" id="reopenConfirm">解除する</button>
+    </div>
+  </div>
+
   <!-- 週の締めダイアログ -->
   <div class="scrim" id="closeScrim" hidden></div>
   <div class="modal" id="closeModal" hidden role="dialog" aria-label="週を締める">
