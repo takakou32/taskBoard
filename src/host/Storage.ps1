@@ -115,10 +115,13 @@ function Get-WeekRange {
 }
 
 # ---- 週リスト --------------------------------------------------------------
+# 戻り値は常に配列。PowerShell は return で配列を展開してしまうため、
+# 空なら $null に、1件なら単体オブジェクトになってしまう。
+# 呼び出し側が .Count や [0] を使えるよう、先頭のカンマで配列のまま返す。
 function Get-WeekList {
     param([string]$Root)
     $dir = Get-WeeksDir $Root
-    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    if (-not (Test-Path -LiteralPath $dir)) { return ,@() }
     $list = @()
     Get-ChildItem -LiteralPath $dir -Filter '*.json' -File | ForEach-Object {
         $id = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
@@ -132,7 +135,7 @@ function Get-WeekList {
         }
     }
     # 新しい順
-    return @($list | Sort-Object { $_.id } -Descending)
+    return ,@($list | Sort-Object { $_.id } -Descending)
 }
 
 # ---- board / week の取得 ---------------------------------------------------
@@ -250,6 +253,48 @@ function Update-Task {
             Add-ItemHistory -Item $task -Text ("{0}: 更新 ({1})" -f $Actor, ($changed -join ', '))
             Write-JsonFile $path $week
         }
+    }
+}
+
+# タスクを複製する。元のすぐ後ろに置くので、列の中で隣り合って見える。
+# 履歴は引き継がず、複製した記録だけを持たせる。
+# 持ち越し印（carriedFrom）も引き継がない。新しく作った作業なので。
+function Copy-Task {
+    param([string]$Root, [string]$WeekId, [string]$TaskId, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -Name $WeekId -Action {
+        $path = Get-WeekPath $Root $WeekId
+        $week = Read-JsonFile $path
+        if (-not $week) { throw "週が見つかりません: $WeekId" }
+        if ($week.closed) { throw "締め済みの週は編集できません: $WeekId" }
+
+        $src = $week.tasks | Where-Object { $_.id -eq $TaskId } | Select-Object -First 1
+        if (-not $src) { throw "タスクが見つかりません: $TaskId" }
+
+        $copy = [ordered]@{
+            id               = New-Id 't'
+            title            = "{0}（コピー）" -f $src.title
+            status           = $src.status
+            goalId           = $src.goalId
+            continuingGoalId = $src.continuingGoalId
+            assignees        = @($src.assignees)
+            due              = $src.due
+            priority         = $src.priority
+            projectId        = $src.projectId
+            description      = if ($src.PSObject.Properties.Name -contains 'description') { $src.description } else { '' }
+            carriedFrom      = $null
+            history          = @()
+        }
+        Add-ItemHistory -Item $copy -Text ("{0}: 「{1}」から複製" -f $Actor, $src.title)
+
+        # 元の直後に差し込む
+        $out = New-Object System.Collections.ArrayList
+        foreach ($t in @($week.tasks)) {
+            [void]$out.Add($t)
+            if ($t.id -eq $TaskId) { [void]$out.Add($copy) }
+        }
+        $week.tasks = @($out.ToArray())
+        Write-JsonFile $path $week
+        return $copy.id
     }
 }
 
@@ -406,6 +451,69 @@ function Remove-ContinuingGoal {
             }
             if ($touched) { Write-JsonFile $wp $week }
         }
+    }
+}
+
+# ---- メモ・連絡事項（board.json 側・週に属さない） -------------------------
+# 週をまたいで覚えておきたいことや、チームへの連絡を置く場所。
+# 週の締めでも消えず、常に画面上部に出る。
+function Add-Note {
+    param([string]$Root, [string]$Text, [string]$Actor = 'unknown')
+    if ([string]::IsNullOrWhiteSpace($Text)) { throw "メモの内容を入力してください。" }
+    Invoke-WithLock -Root $Root -Name 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        if (-not (Test-HasField $board 'notes')) {
+            $board | Add-Member -NotePropertyName notes -NotePropertyValue @() -Force
+        }
+        $note = [ordered]@{
+            id        = New-Id 'n'
+            text      = $Text.Trim()
+            author    = $Actor
+            createdAt = (Get-Date).ToString('yyyy-MM-dd')
+            pinned    = $false
+        }
+        # 新しいものを上に積む
+        $board.notes = @($note) + @($board.notes)
+        Write-JsonFile $path $board
+        return $note.id
+    }
+}
+
+function Update-Note {
+    param([string]$Root, [string]$NoteId, $Fields, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -Name 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        $note = $board.notes | Where-Object { $_.id -eq $NoteId } | Select-Object -First 1
+        if (-not $note) { throw "メモが見つかりません: $NoteId" }
+
+        if (Test-HasField $Fields 'text') {
+            if ([string]::IsNullOrWhiteSpace([string]$Fields.text)) { throw "メモは空にできません。" }
+            $note.text = ([string]$Fields.text).Trim()
+        }
+        if (Test-HasField $Fields 'pinned') {
+            if (-not ($note.PSObject.Properties.Name -contains 'pinned')) {
+                $note | Add-Member -NotePropertyName pinned -NotePropertyValue $false -Force
+            }
+            $note.pinned = [bool]$Fields.pinned
+        }
+        Write-JsonFile $path $board
+    }
+}
+
+function Remove-Note {
+    param([string]$Root, [string]$NoteId, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -Name 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        $before = @($board.notes).Count
+        $board.notes = @($board.notes | Where-Object { $_.id -ne $NoteId })
+        if (@($board.notes).Count -eq $before) { throw "メモが見つかりません: $NoteId" }
+        Write-JsonFile $path $board
     }
 }
 
@@ -682,15 +790,51 @@ function Add-ItemHistory {
     # NoteProperty ができてしまい、JSON にはキー側（空のまま）が出力される。
     # 辞書はキーとして直接扱う。
     if ($Item -is [System.Collections.IDictionary]) {
-        $cur = if ($Item.Contains('history')) { @($Item['history']) } else { @() }
-        $Item['history'] = $cur + $line
+        $cur = @()
+        if ($Item.Contains('history')) { $cur = @($Item['history']) }
+        # 必ず配列で入れる。@() を付けないと1件目のとき文字列になる（下の注記参照）
+        $Item['history'] = @($cur + $line)
         return
     }
     # JSON から読んだ PSCustomObject 側
     if (-not ($Item.PSObject.Properties.Name -contains 'history')) {
         $Item | Add-Member -NotePropertyName history -NotePropertyValue @() -Force
     }
-    $Item.history = @($Item.history) + $line
+    $Item.history = @(@($Item.history) + $line)
+}
+
+# 注記:
+#   ここは以前 `$cur = if (...) { @(...) } else { @() }` と書いていて不具合になった。
+#   PowerShell は if ブロックが空配列を返すと、それを $null に潰してしまう。
+#   その結果 $cur が $null になり、`$null + "文字列"` が配列の連結ではなく
+#   文字列連結として評価され、history が配列でなく文字列として保存されていた。
+#   すると UI 側の history.join() が例外になり、そのカードを開けなくなる。
+#   同じ理由で、配列を作る箇所では最後に @() で包んでおくこと。
+
+# 既に文字列として保存されてしまった history を配列に直す。
+# 不具合修正前に作られたタスクを開けるようにするための後始末。
+function Repair-TaskHistory {
+    param([string]$Root)
+    $fixed = 0
+    foreach ($w in (Get-WeekList $Root)) {
+        $path = Get-WeekPath $Root $w.id
+        $week = Read-JsonFile $path
+        if (-not $week) { continue }
+        $touched = $false
+        foreach ($t in @($week.tasks)) {
+            if (-not ($t.PSObject.Properties.Name -contains 'history')) { continue }
+            if ($null -eq $t.history) { continue }
+            if ($t.history -is [string]) {
+                $t.history = @($t.history)
+                $touched = $true
+                $fixed++
+            }
+        }
+        if ($touched) {
+            Invoke-WithLock -Root $Root -Name $w.id -Action { Write-JsonFile $path $week }
+        }
+    }
+    return $fixed
 }
 
 # ---- 週の締め --------------------------------------------------------------
@@ -722,7 +866,7 @@ function Close-Week {
         }
         $week.closed = $true
         Add-ItemHistory -Item $week -Text ("{0}: {1} を締め" -f $Actor, $WeekId)
-        Write-JsonFile $path $week
+        # 書き込みは次週の作成が終わってから（作った物を記録に残すため）
 
         # 次週を用意（既存なら読み込み、無ければ生成）
         $next = if (Test-Path -LiteralPath $nextPath) { Read-JsonFile $nextPath } else {
@@ -733,10 +877,15 @@ function Close-Week {
         $nextTasks = New-Object System.Collections.ArrayList
         foreach ($t in @($next.tasks)) { [void]$nextTasks.Add($t) }
 
+        # 締めを解除できるよう、次週に作ったものを控えておく
+        $madeGoalIds = New-Object System.Collections.ArrayList
+        $madeTaskIds = New-Object System.Collections.ArrayList
+
         # 持ち越し目標を次週へ複製（新IDを振り、carryStreak を積む）
         $goalIdMap = @{}
         foreach ($g in $carriedGoals) {
             $newGoalId = New-Id 'g'
+            [void]$madeGoalIds.Add($newGoalId)
             $goalIdMap[$g.id] = $newGoalId
             $streak = 1
             if ($g.PSObject.Properties.Name -contains 'carryStreak' -and $g.carryStreak) { $streak = [int]$g.carryStreak + 1 }
@@ -752,8 +901,10 @@ function Close-Week {
             if ($t.status -eq 'done') { continue }
             if (-not $carrySet.ContainsKey($t.id)) { continue }
             $newGoalId = if ($t.goalId -and $goalIdMap.ContainsKey($t.goalId)) { $goalIdMap[$t.goalId] } else { $null }
+            $newTaskId = New-Id 't'
+            [void]$madeTaskIds.Add($newTaskId)
             [void]$nextTasks.Add([ordered]@{
-                id = New-Id 't'; title = $t.title; status = 'todo'
+                id = $newTaskId; title = $t.title; status = 'todo'
                 goalId = $newGoalId
                 continuingGoalId = $t.continuingGoalId
                 assignees = @($t.assignees); due = $nextRange.end
@@ -765,8 +916,137 @@ function Close-Week {
         $next.goals = @($nextGoals.ToArray())
         $next.tasks = @($nextTasks.ToArray())
         Invoke-WithLock -Root $Root -LockName $nextId -Action { Write-JsonFile $nextPath $next }
+
+        # 何を作ったかを週ファイルに残す。締めの解除はこれを見て元に戻す。
+        $record = [ordered]@{
+            nextWeekId     = $nextId
+            createdGoalIds = @($madeGoalIds.ToArray())
+            createdTaskIds = @($madeTaskIds.ToArray())
+            closedAt       = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+            closedBy       = $Actor
+        }
+        if ($week.PSObject.Properties.Name -contains 'closeRecord') { $week.closeRecord = $record }
+        else { $week | Add-Member -NotePropertyName closeRecord -NotePropertyValue $record -Force }
+        Write-JsonFile $path $week
+
         return $nextId
     }
+}
+
+# ---- 締めの解除 ------------------------------------------------------------
+# 締めたときに次週へ作ったもののうち、まだ誰も手を付けていないものだけを撤去し、
+# その週を編集できる状態に戻す。着手済みのものは消さずに残す。
+#
+# 「手つかず」の判定: 履歴が空で、かつ未着手のままであること。
+# 移動も編集も履歴を残すので、これで実作業の有無を判別できる。
+# （並び替えだけは履歴を残さないが、作業ではないので手つかず扱いでよい）
+function Test-TaskUntouched {
+    param($Task)
+    if ($Task.status -ne 'todo') { return $false }
+    $h = @()
+    if ($Task.PSObject.Properties.Name -contains 'history') { $h = @($Task.history) }
+    return ($h.Count -eq 0)
+}
+
+# 解除したら何が起きるかを先に調べる（確認画面に出すため。データは変更しない）
+function Test-WeekReopen {
+    param([string]$Root, [string]$WeekId)
+    $result = [ordered]@{
+        canReopen = $false; reason = ''
+        nextWeekId = ''; removeTasks = @(); keepTasks = @(); removeGoals = 0
+        closedAt = ''; closedBy = ''
+    }
+    $week = Get-Week $Root $WeekId
+    if (-not $week) { $result.reason = "週が見つかりません: $WeekId"; return $result }
+    if (-not $week.closed) { $result.reason = "$WeekId はまだ締められていません。"; return $result }
+
+    # 記録が無い（この機能より前に締められた週）
+    if (-not ($week.PSObject.Properties.Name -contains 'closeRecord') -or -not $week.closeRecord) {
+        $result.canReopen = $true
+        $result.reason = 'この週には締めの記録がありません。解除はできますが、次週に作られた目標やタスクは自動では戻せないため、手作業で整理してください。'
+        return $result
+    }
+
+    $rec = $week.closeRecord
+    $result.nextWeekId = [string]$rec.nextWeekId
+    $result.closedAt   = [string]$rec.closedAt
+    $result.closedBy   = [string]$rec.closedBy
+
+    $next = Get-Week $Root $rec.nextWeekId
+    if ($next -and $next.closed) {
+        $result.reason = "$($rec.nextWeekId) が既に締められています。先にそちらの締めを解除してください。"
+        return $result
+    }
+
+    if ($next) {
+        $madeTasks = @($rec.createdTaskIds)
+        foreach ($id in $madeTasks) {
+            $t = $next.tasks | Where-Object { $_.id -eq $id } | Select-Object -First 1
+            if (-not $t) { continue }   # 既に消されている
+            if (Test-TaskUntouched $t) { $result.removeTasks = @($result.removeTasks) + $t.title }
+            else { $result.keepTasks = @($result.keepTasks) + $t.title }
+        }
+        $result.removeGoals = @($rec.createdGoalIds).Count
+    }
+    $result.canReopen = $true
+    return $result
+}
+
+# 関数名は Resume-Week。Reopen は PowerShell の承認済み動詞ではないため。
+function Resume-Week {
+    param([string]$Root, [string]$WeekId, [string]$Actor = 'unknown')
+
+    $check = Test-WeekReopen -Root $Root -WeekId $WeekId
+    if (-not $check.canReopen) { throw $check.reason }
+
+    $removed = 0; $kept = 0
+    $week = Get-Week $Root $WeekId
+    $rec  = if ($week.PSObject.Properties.Name -contains 'closeRecord') { $week.closeRecord } else { $null }
+
+    # 先に次週から、手つかずの持ち越し分を撤去する
+    if ($rec -and $rec.nextWeekId) {
+        $nextId = [string]$rec.nextWeekId
+        $r = Invoke-WithLock -Root $Root -LockName $nextId -Action {
+            $np = Get-WeekPath $Root $nextId
+            $next = Read-JsonFile $np
+            if (-not $next) { return @(0, 0) }
+
+            $keepIds = @{}   # 残すことにしたタスクの目標は消さない
+            $delIds  = @{}
+            foreach ($id in @($rec.createdTaskIds)) {
+                $t = $next.tasks | Where-Object { $_.id -eq $id } | Select-Object -First 1
+                if (-not $t) { continue }
+                if (Test-TaskUntouched $t) { $delIds[$id] = $true }
+                else { $keepIds[$id] = $true }
+            }
+            $next.tasks = @($next.tasks | Where-Object { -not $delIds.ContainsKey($_.id) })
+
+            # 目標は、残ったタスクから参照されていなければ撤去する
+            $stillUsed = @{}
+            foreach ($t in @($next.tasks)) { if ($t.goalId) { $stillUsed[$t.goalId] = $true } }
+            $next.goals = @($next.goals | Where-Object {
+                -not ((@($rec.createdGoalIds) -contains $_.id) -and (-not $stillUsed.ContainsKey($_.id)))
+            })
+
+            Write-JsonFile $np $next
+            return @($delIds.Count, $keepIds.Count)
+        }
+        $removed = $r[0]; $kept = $r[1]
+    }
+
+    # 週を編集できる状態に戻す
+    Invoke-WithLock -Root $Root -LockName $WeekId -Action {
+        $path = Get-WeekPath $Root $WeekId
+        $w = Read-JsonFile $path
+        if (-not $w) { throw "週が見つかりません: $WeekId" }
+        $w.closed = $false
+        foreach ($g in @($w.goals)) { $g.status = 'running' }
+        if ($w.PSObject.Properties.Name -contains 'closeRecord') { $w.closeRecord = $null }
+        Add-ItemHistory -Item $w -Text ("{0}: {1} の締めを解除" -f $Actor, $WeekId)
+        Write-JsonFile $path $w
+    }
+
+    return [ordered]@{ removed = $removed; kept = $kept; nextWeekId = $(if ($rec) { [string]$rec.nextWeekId } else { '' }) }
 }
 
 function Get-NextWeekId {
@@ -890,7 +1170,8 @@ function Get-RetroSummary {
             carried   = @($goals | Where-Object { $_.status -eq 'carried' }).Count
         }
     }
-    return $out
+    # Get-WeekList と同じ理由で配列のまま返す（0件や1件でも UI が配列として扱えるように）
+    return ,@($out)
 }
 
 # ---- バックアップ ----------------------------------------------------------

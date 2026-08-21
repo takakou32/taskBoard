@@ -25,26 +25,134 @@ function Resolve-Config {
     param([string]$ConfigPath, [string]$DataRootOverride)
     $cfg = $null
     if ($ConfigPath -and (Test-Path -LiteralPath $ConfigPath)) {
-        $cfg = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $raw = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
+        try {
+            $cfg = $raw | ConvertFrom-Json
+        } catch {
+            # JSON では \ がエスケープ記号。Windowsのパスをそのまま貼ると壊れる。
+            throw @"
+$ConfigPath の書式が壊れています。
+
+JSON では「\」は特別な記号なので、Windowsのパスをそのまま貼ると読めません。
+バックスラッシュを2つずつ重ねてください。
+
+  誤: "dataRoot": "\\NAS-SERVER\share\taskboard\data"
+  正: "dataRoot": "\\\\NAS-SERVER\\share\\taskboard\\data"
+
+「/」で書く方法もあります（こちらは重ねる必要がありません）:
+  "dataRoot": "//NAS-SERVER/share/taskboard/data"
+
+元のエラー: $($_.Exception.Message)
+"@
+        }
     }
     $root = $DataRootOverride
-    if (-not $root -and $cfg -and $cfg.dataRoot) { $root = $cfg.dataRoot }
+    if (-not $root -and $cfg -and $cfg.dataRoot) { $root = [string]$cfg.dataRoot }
     if (-not $root) { $root = Join-Path $RepoRoot 'data\sample' }   # 既定はサンプル
     $actor = if ($cfg -and $cfg.actor) { $cfg.actor } else { $env:USERNAME }
-    return [pscustomobject]@{ DataRoot = $root; Actor = $actor }
+    return [pscustomobject]@{ DataRoot = $root; Actor = $actor; ConfigPath = $ConfigPath }
 }
 
-$Config   = Resolve-Config -ConfigPath $ConfigPath -DataRootOverride $DataRoot
-$DataRoot = $Config.DataRoot
-$Actor    = $Config.Actor
+# dataRoot が実際に使える場所を指しているかを確認し、駄目なら直し方まで示す。
+function Assert-DataRoot {
+    param([string]$Root, [string]$ConfigPath)
+    $where = if ($ConfigPath) { $ConfigPath } else { 'コマンドラインの -DataRoot' }
 
-if (-not (Test-Path -LiteralPath (Get-BoardPath $DataRoot))) {
-    Initialize-DataRoot $DataRoot
-    if (-not (Test-Path -LiteralPath (Get-BoardPath $DataRoot))) {
-        Write-Host "board.json が $DataRoot にありません。data\sample を参考に用意してください。" -ForegroundColor Yellow
+    # 1) JSONのエスケープ崩れ。\b や \n が制御文字として紛れ込むと、
+    #    エラーも出ないまま存在しないパスになる。見た目では気づけないので明示する。
+    $ctrl = [regex]::Matches($Root, '[\x00-\x1F]')
+    if ($ctrl.Count) {
+        $vis = ($Root.ToCharArray() | ForEach-Object {
+            $c = [int]$_
+            if ($c -lt 32) { '<0x{0:X2}>' -f $c } else { $_ }
+        }) -join ''
+        throw @"
+$where の dataRoot に制御文字が混ざっています。
+
+  解釈されたパス: $vis
+
+JSON では「\」が特別な記号のため、「\b」「\n」「\t」などが
+別の文字に化けています。バックスラッシュを2つずつ重ねてください。
+
+  誤: "dataRoot": "\\NAS-SERVER\board\data"
+  正: "dataRoot": "\\\\NAS-SERVER\\board\\data"
+
+「/」で書く方法もあります:
+  "dataRoot": "//NAS-SERVER/board/data"
+"@
+    }
+
+    # 2) board.json そのものを指してしまっている場合は、親フォルダを教える
+    if ($Root -match '(?i)\.json$') {
+        $parent = Split-Path -Parent $Root
+        throw @"
+dataRoot にはファイルではなく「フォルダ」を指定してください。
+
+  今の指定: $Root
+  正しい値: $parent
+
+dataRoot は board.json が入っているフォルダを指します。
+"@
+    }
+
+    # 3) フォルダに到達できない
+    if (-not (Test-Path -LiteralPath $Root)) {
+        throw @"
+dataRoot のフォルダに接続できません。
+
+  指定されたパス: $Root
+  設定した場所  : $where
+
+確認してください:
+  - そのフォルダがNAS上に実在するか（エクスプローラーのアドレス欄に貼って確認）
+  - ネットワークに接続できているか / 共有にアクセス権があるか
+  - パスの綴り（JSONではバックスラッシュを2つずつ重ねます）
+"@
+    }
+
+    # 4) フォルダはあるが board.json が無い＝置き場所を1階層間違えている可能性が高い
+    if (-not (Test-Path -LiteralPath (Get-BoardPath $Root))) {
+        $hint = ''
+        # 一階層下に board.json があるなら、それが正解である可能性が高い
+        $sub = Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue |
+               Where-Object { Test-Path -LiteralPath ([System.IO.Path]::Combine($_.FullName, 'board.json')) } |
+               Select-Object -First 1
+        if ($sub) {
+            $hint = "`n`nもしかして、こちらではありませんか:`n  $($sub.FullName)"
+        }
+        throw @"
+指定されたフォルダに board.json がありません。
+
+  指定されたパス: $Root
+  探したファイル: $(Get-BoardPath $Root)
+
+dataRoot は「board.json が直接入っているフォルダ」を指定します。
+
+はじめて使う場合は、リポジトリの
+  data\template\board.json
+を そのフォルダへコピーしてください。weeks などは自動で作られます。$hint
+"@
     }
 }
+
+$Config     = Resolve-Config -ConfigPath $ConfigPath -DataRootOverride $DataRoot
+$DataRoot   = $Config.DataRoot
+$Actor      = $Config.Actor
+
+Assert-DataRoot -Root $DataRoot -ConfigPath $Config.ConfigPath
+
+# 必要なサブフォルダ（weeks / .locks / backup）を毎回確認して作る。
+# board.json だけを置いた状態（data\template をNASにコピーした直後など）でも
+# 動くようにするため、board.json の有無にかかわらず実行する。冪等なので毎回でよい。
+Initialize-DataRoot $DataRoot
+Write-Host "データの場所: $DataRoot" -ForegroundColor DarkGray
 try { Backup-DataDaily $DataRoot } catch { Write-Host "バックアップ警告: $($_.Exception.Message)" -ForegroundColor Yellow }
+
+# 不具合で history が文字列として保存されたタスクを配列に直す。該当が無ければ何もしない。
+try {
+    $repaired = Repair-TaskHistory $DataRoot
+    if ($repaired) { Write-Host "$repaired 件のタスクの履歴を修復しました。" -ForegroundColor Yellow }
+} catch { Write-Host "履歴の修復に失敗: $($_.Exception.Message)" -ForegroundColor Yellow }
 
 # ---- WebView2 / WinForms アセンブリ ---------------------------------------
 Add-Type -Namespace TB -Name Native -MemberDefinition @'
@@ -146,6 +254,48 @@ $script:CurrentWeekId  = $null
 $script:LastStamp      = ''
 $script:HeldLockTaskId = $null
 
+# メモ内のリンクを外部アプリで開く。
+# WebView2 の中で直接開くとアプリ自体が別ページへ遷移してしまうため、
+# UI 側はクリックを横取りしてこちらへ渡す。
+function Open-ExternalLink {
+    param([string]$Target)
+    if ([string]::IsNullOrWhiteSpace($Target)) { return }
+    $t = $Target.Trim()
+
+    # 受け付ける形式だけを明示的に判定する。javascript: など他は開かない。
+    if ($t -match '^https?://') {
+        Start-Process $t
+        return
+    }
+    if ($t -match '^mailto:') {
+        Start-Process $t
+        return
+    }
+    if ($t -match '^[\w.+-]+@[\w-]+\.[\w.-]+$') {
+        Start-Process ("mailto:{0}" -f $t)
+        return
+    }
+    # UNC（\\サーバー\共有\...）とローカルパス（C:\...）
+    if ($t -match '^\\\\[^\\]' -or $t -match '^[A-Za-z]:\\') {
+        if (-not (Test-Path -LiteralPath $t)) {
+            throw "見つかりませんでした: $t`n（共有フォルダに接続できているか、綴りが正しいか確認してください）"
+        }
+        # 実行ファイルの類は開かず、場所を選択した状態でエクスプローラーを出すに留める。
+        # メモは誰でも書けるので、クリックが即実行にならないようにしておく。
+        $ext = ''
+        try { $ext = [System.IO.Path]::GetExtension($t).ToLowerInvariant() } catch { }
+        $risky = @('.exe','.bat','.cmd','.ps1','.psm1','.vbs','.vbe','.js','.jse','.wsf','.wsh',
+                   '.msi','.msp','.scr','.com','.pif','.lnk','.reg','.hta','.cpl','.jar')
+        if ($risky -contains $ext) {
+            Start-Process explorer.exe -ArgumentList ('/select,"{0}"' -f $t)
+        } else {
+            Start-Process explorer.exe -ArgumentList ('"{0}"' -f $t)
+        }
+        return
+    }
+    throw "この形式のリンクは開けません: $t"
+}
+
 function Invoke-UiMessage {
     param($msg)
     try {
@@ -180,6 +330,11 @@ function Invoke-UiMessage {
                 Update-Task -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -Fields $msg.fields -Actor $Actor
                 Send-State $msg.weekId
                 Send-Toast "保存しました"
+            }
+            'duplicateTask' {
+                Copy-Task -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -Actor $Actor | Out-Null
+                Send-State $msg.weekId
+                Send-Toast "複製しました"
             }
             'deleteTask' {
                 Remove-Task -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -Actor $Actor
@@ -228,6 +383,33 @@ function Invoke-UiMessage {
                 Send-State $script:CurrentWeekId
                 Send-Toast "継続目標を削除しました"
             }
+            'clientError' {
+                # 画面側の例外。WebView2 の中では見えないのでコンソールとログに残す。
+                $line = "[{0}] 画面側エラー ({1}): {2}" -f (Get-Date).ToString('HH:mm:ss'), $msg.where, $msg.message
+                Write-Host $line -ForegroundColor Red
+                try {
+                    $logDir = Join-Path $env:LOCALAPPDATA 'TaskBoard'
+                    if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+                    Add-Content -LiteralPath (Join-Path $logDir 'error.log') -Value $line -Encoding UTF8
+                } catch { }
+            }
+            'openLink' {
+                Open-ExternalLink -Target $msg.url
+            }
+            'createNote' {
+                Add-Note -Root $DataRoot -Text $msg.text -Actor $Actor | Out-Null
+                Send-State $script:CurrentWeekId
+                Send-Toast "メモを追加しました"
+            }
+            'updateNote' {
+                Update-Note -Root $DataRoot -NoteId $msg.noteId -Fields $msg.fields -Actor $Actor
+                Send-State $script:CurrentWeekId
+            }
+            'deleteNote' {
+                Remove-Note -Root $DataRoot -NoteId $msg.noteId -Actor $Actor
+                Send-State $script:CurrentWeekId
+                Send-Toast "メモを削除しました"
+            }
             'createMember' {
                 Add-BoardMember -Root $DataRoot -Fields $msg.fields -Actor $Actor | Out-Null
                 Send-State $script:CurrentWeekId
@@ -265,6 +447,27 @@ function Invoke-UiMessage {
             'reorderTask' {
                 Set-TaskOrder -Root $DataRoot -WeekId $msg.weekId -TaskId $msg.taskId -BeforeTaskId $msg.beforeTaskId -Actor $Actor
                 Send-State $msg.weekId
+            }
+            'checkReopen' {
+                # 解除したら何が起きるかを先に返す（確認画面用。データは変えない）
+                $c = Test-WeekReopen -Root $DataRoot -WeekId $msg.weekId
+                Send-ToUi @{
+                    type = 'reopenCheck'; weekId = $msg.weekId
+                    canReopen = [bool]$c.canReopen; reason = [string]$c.reason
+                    nextWeekId = [string]$c.nextWeekId
+                    removeTasks = @($c.removeTasks); keepTasks = @($c.keepTasks)
+                    removeGoals = [int]$c.removeGoals
+                    closedAt = [string]$c.closedAt; closedBy = [string]$c.closedBy
+                }
+            }
+            'reopenWeek' {
+                $r = Resume-Week -Root $DataRoot -WeekId $msg.weekId -Actor $Actor
+                $script:CurrentWeekId = $msg.weekId
+                Send-State $msg.weekId
+                $t = "$($msg.weekId) の締めを解除しました"
+                if ($r.removed) { $t += "（次週から $($r.removed) 件を撤去）" }
+                if ($r.kept)    { $t += "。着手済みの $($r.kept) 件は残しました" }
+                Send-Toast $t
             }
             'closeWeek' {
                 # JS の judgements は PSCustomObject で届くのでハッシュに詰め替える

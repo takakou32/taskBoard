@@ -33,6 +33,30 @@
     <button class="btn" id="bannerAction"></button>
   </div>
 
+  <div class="filterbar" id="filterBar" hidden>
+    <span class="fb-label">絞り込み中</span>
+    <span class="fb-name" id="filterName"></span>
+    <span class="fb-hit" id="filterHit"></span>
+    <button class="btn" id="filterClear">解除して全部表示</button>
+  </div>
+
+  <!-- メモ・連絡事項（週をまたいで残る） -->
+  <section class="memo" id="memo" hidden>
+    <button class="memo-h" id="memoToggle" aria-expanded="true">
+      <span class="chev" id="memoChev">▾</span>
+      <span class="ttl">メモ・連絡事項</span>
+      <span class="cnt" id="memoCount"></span>
+      <span class="peek" id="memoPeek"></span>
+    </button>
+    <div class="memo-b" id="memoBody">
+      <div class="memo-list" id="memoList"></div>
+      <div class="memo-add">
+        <input type="text" id="memoNew" placeholder="覚えておきたいこと・連絡事項を書く" maxlength="200">
+        <button class="btn primary" id="memoAdd">追加</button>
+      </div>
+    </div>
+  </section>
+
   <div class="board-scroll" id="viewRoot">
     <div class="placeholder">読み込み中…</div>
   </div>
@@ -91,6 +115,7 @@
     </div>
     <div class="drawer-f">
       <button class="btn danger" id="btnDelete">削除</button>
+      <button class="btn" id="btnDuplicate">複製</button>
       <span class="spacer"></span>
       <button class="btn" id="btnCancel">キャンセル</button>
       <button class="btn primary" id="btnSave">保存</button>
@@ -187,6 +212,21 @@
       <button class="btn" id="setDone">閉じる</button>
     </div>
   </aside>
+
+  <!-- 締めの解除ダイアログ -->
+  <div class="scrim" id="reopenScrim" hidden></div>
+  <div class="modal" id="reopenModal" hidden role="dialog" aria-label="締めを解除">
+    <div class="modal-h">
+      <div class="t" id="reopenTitle">締めを解除</div>
+      <div class="s" id="reopenSub"></div>
+    </div>
+    <div class="modal-b" id="reopenBody"></div>
+    <div class="modal-f">
+      <span class="spacer"></span>
+      <button class="btn" id="reopenCancel">やめる</button>
+      <button class="btn primary" id="reopenConfirm">解除する</button>
+    </div>
+  </div>
 
   <!-- 週の締めダイアログ -->
   <div class="scrim" id="closeScrim" hidden></div>

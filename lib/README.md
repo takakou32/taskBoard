@@ -1,21 +1,10 @@
-# lib フォルダ — WebView2 の DLL を置く場所
+# lib フォルダ — WebView2 の DLL
 
-このアプリは UI 表示に **WebView2** を使います。ビルドは不要ですが、
-WebView2 の SDK DLL をこのフォルダに置く必要があります。
+このアプリは UI 表示に **WebView2** を使います。
+必要な DLL（約1.2MB）は**このフォルダに同梱済み**です。
+clone やコピーをしたらそのまま起動できます。ビルドもインターネット接続も不要です。
 
-## いちばん簡単な方法
-
-リポジトリ直下の **setup-webview2.ps1** を実行してください。
-NuGet の公式パッケージから必要なDLLだけを自動で配置します。
-
-```powershell
-.\setup-webview2.ps1
-```
-
-ネットにつながらないPCへ配る場合は、つながるPCで一度実行し、
-**この lib フォルダごとコピー**してください。それだけで動きます。
-
-## 配置後の構成
+## 中身
 
 ```
 lib\
@@ -26,25 +15,32 @@ lib\
   runtimes\win-arm64\native\WebView2Loader.dll
 ```
 
+出所は NuGet の公式パッケージ
+[Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2)（v1.0.4078.44、Microsoft署名済み）。
+ライセンスは `WebView2-LICENSE.txt` を参照してください。
+
 `WebView2Loader.dll` はネイティブDLLでCPUアーキテクチャごとに別物です。
 .NET Framework は NuGet の `runtimes\<rid>\native\` を自動解決しないため、
-アプリ側（`src\host\TaskBoard.ps1` の `Import-WebView2`）が実行中プロセスの
-アーキテクチャを見て明示的に読み込みます。3種類とも置いておけば環境を選びません。
+`src\host\TaskBoard.ps1` の `Import-WebView2` が実行中プロセスのアーキテクチャを見て
+明示的に読み込みます。3種類とも置いてあるので環境を選びません。
 
-## 手動で配置する場合
+## 更新するとき
 
-1. https://www.nuget.org/packages/Microsoft.Web.WebView2 から `.nupkg` をダウンロード
-2. 拡張子を `.zip` に変えて展開
-3. `lib\net462\`（バージョンによっては `net45\` など）から
-   `Microsoft.Web.WebView2.Core.dll` と `Microsoft.Web.WebView2.WinForms.dll` をこのフォルダへ
-4. `runtimes\win-*\native\WebView2Loader.dll` を上記の構成どおりにコピー
+```powershell
+.\setup-webview2.ps1 -Force
+```
+
+最新の安定版を取得して置き換えます。差分をコミットしてください。
+バージョンを固定したい場合は `-Version 1.0.4078.44` のように指定できます。
 
 > マネージドDLLの入っているフォルダ名はバージョンによって変わります
-> （例: 1.0.4078.44 では `net462`）。`setup-webview2.ps1` は自動で探します。
+> （v1.0.4078.44 では `net462`。以前は `net45` でした）。
+> `setup-webview2.ps1` は決め打ちせず自動で探します。
 
 ## WebView2 ランタイム（Evergreen）について
 
 DLL とは別に、実行PCに **WebView2 ランタイム** が必要です。
+これは同梱できないので、無い場合は導入が要ります。
 
 - Windows 11 は標準搭載。
 - Windows 10 も Microsoft Edge の更新で入っていることがほとんどです。
@@ -56,11 +52,3 @@ DLL とは別に、実行PCに **WebView2 ランタイム** が必要です。
   ```
 
 - 無い場合は Microsoft の「Evergreen ブートストラップ」を一度実行すれば入ります。
-
----
-
-**DLL が無くても UI だけは確認できます**:
-`タスクボード_UI確認.bat` をダブルクリック（データ保存はされません）。
-
-なお、このフォルダの `*.dll` と `runtimes\` は `.gitignore` で除外しています
-（バイナリはリポジトリに入れず、各環境で取得する方針）。

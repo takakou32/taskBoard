@@ -15,6 +15,26 @@ const STATUSES = [
 
 const bridge = window.chrome && window.chrome.webview ? window.chrome.webview : null;
 
+/* 画面側で例外が起きても WebView2 の中では何も見えず、
+   「ボタンを押しても無反応」としか分からない。
+   握りつぶさずホストへ送り、利用者にも知らせる。 */
+function reportError(where, err) {
+  const msg = (err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err);
+  try { if (bridge) bridge.postMessage({ type: "clientError", where: where, message: msg }); } catch (e) { /* 送信自体が失敗しても落とさない */ }
+  try { toast("エラーが発生しました（" + where + "）"); } catch (e) { /* toast前の失敗は無視 */ }
+}
+
+window.addEventListener("error", (e) => reportError("script", e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => reportError("promise", e.reason));
+
+// 画面が丸ごと固まらないよう、操作ごとに包んで報告する
+function guard(where, fn) {
+  return function (...args) {
+    try { return fn.apply(this, args); }
+    catch (err) { reportError(where, err); }
+  };
+}
+
 let state = null;         // { board, week, weeks, view, connected }
 let filterGoalId = null;  // 目標レーンでの絞り込み（"__unlinked__" で紐づけなしのみ）
 let searchText = "";
@@ -45,6 +65,9 @@ function handleHostMessage(msg) {
     }
     case "retro":
       if (state) { state.retro = msg.weeks || []; render(); }
+      break;
+    case "reopenCheck":
+      showReopenDialog(msg);
       break;
     case "toast":
       toast(msg.text);
@@ -88,7 +111,7 @@ function wireToolbar() {
     if (bridge) send({ type: "gotoCurrentWeek" });
     else toast("スタンドアロンでは今週固定です");
   };
-  document.getElementById("btnNewTask").onclick = () => openDrawer(null);
+  document.getElementById("btnNewTask").onclick = guard("新規タスク", () => openDrawer(null));
   document.getElementById("drawerClose").onclick = closeDrawer;
   document.getElementById("btnCancel").onclick = closeDrawer;
   // 背景の暗幕は3つのドロワーで共用。開いているものを閉じる。
@@ -99,7 +122,15 @@ function wireToolbar() {
     else if (!document.getElementById("setDrawer").hidden) closeSettings();
   };
   document.getElementById("btnSave").onclick = saveDrawer;
-  document.getElementById("btnDelete").onclick = deleteDrawer;
+  document.getElementById("btnDelete").onclick = guard("削除", deleteDrawer);
+  document.getElementById("btnDuplicate").onclick = guard("複製", duplicateDrawer);
+  document.getElementById("filterClear").onclick = clearFilter;
+  document.getElementById("memoToggle").onclick = toggleMemo;
+  document.getElementById("memoAdd").onclick = addNote;
+  document.getElementById("memoNew").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addNote(); }
+  });
+
   document.getElementById("goalClose").onclick = closeGoalDrawer;
   document.getElementById("gCancel").onclick = closeGoalDrawer;
   document.getElementById("gSave").onclick = saveGoalDrawer;
@@ -124,7 +155,10 @@ function wireToolbar() {
     if (e.key === "Enter") { e.preventDefault(); addContGoal(); }
   });
 
-  document.getElementById("btnCloseWeek").onclick = openCloseDialog;
+  document.getElementById("btnCloseWeek").onclick = guard("週を締める", openCloseDialog);
+  document.getElementById("reopenCancel").onclick = closeReopenDialog;
+  document.getElementById("reopenScrim").onclick = closeReopenDialog;
+  document.getElementById("reopenConfirm").onclick = guard("締めの解除", confirmReopen);
   document.getElementById("closeCancel").onclick = closeCloseDialog;
   document.getElementById("closeScrim").onclick = closeCloseDialog;
   document.getElementById("closeConfirm").onclick = confirmClose;
@@ -135,6 +169,7 @@ function wireToolbar() {
     else if (!document.getElementById("contDrawer").hidden) closeContDrawer();
     else if (!document.getElementById("setDrawer").hidden) closeSettings();
     else if (!document.getElementById("closeModal").hidden) closeCloseDialog();
+    else if (!document.getElementById("reopenModal").hidden) closeReopenDialog();
   });
   document.getElementById("search").addEventListener("input", (e) => {
     searchText = e.target.value.trim();
@@ -166,9 +201,15 @@ function changeWeekBy(delta) {
 }
 
 /* ---------------- 描画 ---------------- */
-function render() {
+const render = guard("画面描画", function () {
+  renderInner();
+});
+
+function renderInner() {
   if (!state) return;
   renderToolbarState();
+  renderMemo();
+  renderFilterBar();
   const root = document.getElementById("viewRoot");
   if (state.view === "assignee") root.replaceChildren(renderAssigneeView());
   else if (state.view === "retro") root.replaceChildren(renderRetroView());
@@ -206,13 +247,24 @@ function renderToolbarState() {
   }
   banner.classList.remove("warn");
 
+  // 締め済みの週は編集できないので、その旨と解除の導線を出す
+  if (w.closed) {
+    banner.classList.add("show");
+    document.getElementById("bannerText").textContent =
+      w.id + " は締め済みです。記録として固定されているため編集できません。";
+    const act = document.getElementById("bannerAction");
+    act.textContent = "締めを解除";
+    act.onclick = guard("締めの解除", askReopen);
+    return;
+  }
+
   // 締め忘れバナー
   if (state.needsClose) {
     banner.classList.add("show");
     document.getElementById("bannerText").textContent = w.id + " が未締めです。達成／持ち越しを判定してください。";
     const act = document.getElementById("bannerAction");
     act.textContent = "週を締める";
-    act.onclick = openCloseDialog;
+    act.onclick = guard("週を締める", openCloseDialog);
   } else {
     banner.classList.remove("show");
   }
@@ -233,6 +285,12 @@ function renderBoard() {
     zone.dataset.status = st.key;
     wireDropzone(zone);
     for (const t of colTasks) zone.appendChild(renderCard(t));
+    // 絞り込みで0件になった列は、空なのか隠れているのかを区別できるようにする
+    if (!colTasks.length && (filterGoalId || searchText)) {
+      const em = el("div", "col-empty");
+      em.textContent = "絞り込みに該当なし";
+      zone.appendChild(em);
+    }
     if (st.key === "todo" && !state.week.closed) {
       const add = el("button", "ghost-add");
       add.textContent = "＋ カードを追加";
@@ -251,8 +309,8 @@ function renderGoalLane() {
   title.innerHTML = '<span class="t">今週の目標</span><span class="s">' + esc(shortWeek(state.week.id)) + "</span>";
   lane.appendChild(title);
 
-  const weekGoals = state.week.goals || [];
-  const tasks = state.week.tasks || [];
+  const weekGoals = asArray(state.week.goals);
+  const tasks = asArray(state.week.tasks);
   for (const g of weekGoals) {
     const linked = tasks.filter((t) => t.goalId === g.id);
     const done = linked.filter((t) => t.status === "done").length;
@@ -289,7 +347,7 @@ function renderGoalLane() {
     lane.appendChild(addGoal);
   }
 
-  const contGoals = (state.board.continuingGoals || []).filter(isActive);
+  const contGoals = asArray(state.board.continuingGoals).filter(isActive);
   if (contGoals.length || !state.readOnly) {
     const sep = el("div", "lane-sep");
     sep.textContent = "継続目標";
@@ -353,7 +411,7 @@ function renderCard(t) {
   due.textContent = fmtDue(t);
   meta.appendChild(due);
   meta.appendChild(el("span", "sp"));
-  for (const id of (t.assignees || [])) {
+  for (const id of asArray(t.assignees)) {
     const m = memberById(id);
     if (m) meta.appendChild(avatar(m));
   }
@@ -365,11 +423,11 @@ function renderCard(t) {
 
 function goalTagFor(t) {
   if (t.goalId) {
-    const g = (state.week.goals || []).find((x) => x.id === t.goalId);
+    const g = asArray(state.week.goals).find((x) => x.id === t.goalId);
     if (g) return chipTag(g.key, false);
   }
   if (t.continuingGoalId) {
-    const c = (state.board.continuingGoals || []).find((x) => x.id === t.continuingGoalId);
+    const c = asArray(state.board.continuingGoals).find((x) => x.id === t.continuingGoalId);
     if (c) return chipTag(c.key, true);
   }
   return null;
@@ -380,8 +438,8 @@ function renderAssigneeView() {
   const wrap = el("div", "lanes");
   const tasks = visibleTasks();
   // 有効なメンバー＋休止中でもこの週にタスクを持っている人（作業を隠さない）
-  const members = (state.board.members || []).filter(
-    (m) => isActive(m) || tasks.some((t) => (t.assignees || []).includes(m.id))
+  const members = asArray(state.board.members).filter(
+    (m) => isActive(m) || tasks.some((t) => asArray(t.assignees).includes(m.id))
   );
 
   const head = el("div", "lane-head");
@@ -396,7 +454,7 @@ function renderAssigneeView() {
 
   // 各メンバーの行。担当者が複数いるタスクはそれぞれの行に出す。
   for (const m of members) {
-    const mine = tasks.filter((t) => (t.assignees || []).includes(m.id));
+    const mine = tasks.filter((t) => asArray(t.assignees).includes(m.id));
     const overdue = mine.filter((t) => isOverdue(t)).length;
     const lane = el("div", "lane" + (overdue ? " over" : ""));
 
@@ -419,7 +477,7 @@ function renderAssigneeView() {
   }
 
   // 担当者未設定
-  const none = tasks.filter((t) => !(t.assignees || []).length);
+  const none = tasks.filter((t) => !asArray(t.assignees).length);
   if (none.length) {
     const lane = el("div", "lane");
     const who = el("div", "who");
@@ -565,7 +623,7 @@ function clearInsertLine(zone) {
 
 // 列をまたいだら状態変更、同じ列なら並び替え。両方なら状態変更のあと並び替える。
 function dropTask(taskId, toStatus, beforeTaskId) {
-  const t = (state.week.tasks || []).find((x) => x.id === taskId);
+  const t = asArray(state.week.tasks).find((x) => x.id === taskId);
   if (!t) return;
   const statusChanged = t.status !== toStatus;
 
@@ -592,7 +650,7 @@ function dropTask(taskId, toStatus, beforeTaskId) {
 
 // プレビュー用のローカル並び替え（ホスト側の Set-TaskOrder と同じ規則）
 function reorderLocal(taskId, beforeTaskId) {
-  const all = state.week.tasks || [];
+  const all = asArray(state.week.tasks);
   const moving = all.find((x) => x.id === taskId);
   if (!moving) return;
   const rest = all.filter((x) => x.id !== taskId);
@@ -612,8 +670,42 @@ function toggleFilter(id) {
   render();
 }
 
+function clearFilter() {
+  filterGoalId = null;
+  searchText = "";
+  document.getElementById("search").value = "";
+  render();
+}
+
+// 何で絞り込んでいるかの表示名
+function filterLabel() {
+  if (filterGoalId === "__unlinked__") return "目標に紐づかないタスク";
+  const g = asArray(state.week.goals).find((x) => x.id === filterGoalId);
+  if (g) return g.key + " ・ " + g.title;
+  const c = asArray(state.board.continuingGoals).find((x) => x.id === filterGoalId);
+  if (c) return c.key + " ・ " + c.title + "（継続目標）";
+  return "選択中の目標";
+}
+
+function renderFilterBar() {
+  const bar = document.getElementById("filterBar");
+  const active = !!filterGoalId || !!searchText;
+  bar.hidden = !active;
+  if (!active) return;
+
+  const parts = [];
+  if (filterGoalId) parts.push(filterLabel());
+  if (searchText) parts.push("検索: " + searchText);
+  document.getElementById("filterName").textContent = parts.join(" / ");
+
+  const hit = visibleTasks().length;
+  const total = asArray(state.week.tasks).length;
+  document.getElementById("filterHit").textContent =
+    hit === 0 ? "該当なし（全 " + total + " 件）" : hit + " / " + total + " 件";
+}
+
 function visibleTasks() {
-  let tasks = state.week.tasks || [];
+  let tasks = asArray(state.week.tasks);
   if (filterGoalId === "__unlinked__") tasks = tasks.filter((t) => !t.goalId && !t.continuingGoalId);
   else if (filterGoalId) tasks = tasks.filter((t) => t.goalId === filterGoalId || t.continuingGoalId === filterGoalId);
   if (searchText) {
@@ -626,7 +718,7 @@ function visibleTasks() {
 /* ---------------- 詳細ドロワー（新規作成 / 編集 / 削除） ---------------- */
 let editingId = null;   // null = 新規作成モード
 
-function openTask(t) { openDrawer(t); }
+const openTask = guard("タスクを開く", function (t) { openDrawer(t); });
 
 function openDrawer(task) {
   if (state.week.closed) { toast("締め済みの週は編集できません"); return; }
@@ -647,6 +739,8 @@ function openDrawer(task) {
   document.getElementById("drawerTitle").textContent = task ? "タスクを編集" : "新規タスク";
   document.getElementById("btnSave").textContent = task ? "保存" : "作成";
   document.getElementById("btnDelete").hidden = !task;
+  // 複製は既存タスクにだけ意味がある
+  document.getElementById("btnDuplicate").hidden = !task;
 
   document.getElementById("fTitle").value = t.title || "";
   document.getElementById("fDesc").value = t.description || "";
@@ -657,8 +751,8 @@ function openDrawer(task) {
 
   // 目標: 週の大目標 → 継続目標 → 紐づけなし
   const goalOpts = [{ value: "", label: "（紐づけなし）" }];
-  for (const g of state.week.goals || []) goalOpts.push({ value: "g:" + g.id, label: g.key + " ・ " + g.title });
-  for (const c of (state.board.continuingGoals || []).filter((x) => isActive(x) || x.id === t.continuingGoalId)) {
+  for (const g of asArray(state.week.goals)) goalOpts.push({ value: "g:" + g.id, label: g.key + " ・ " + g.title });
+  for (const c of asArray(state.board.continuingGoals).filter((x) => isActive(x) || x.id === t.continuingGoalId)) {
     goalOpts.push({ value: "c:" + c.id, label: c.key + " ・ " + c.title + "（継続）" });
   }
   const goalVal = t.goalId ? "g:" + t.goalId : t.continuingGoalId ? "c:" + t.continuingGoalId : "";
@@ -666,7 +760,7 @@ function openDrawer(task) {
 
   // 休止中の案件は選択肢から外すが、既に紐づいているものは残す（勝手に外さない）
   const projOpts = [{ value: "", label: "（なし）" }];
-  for (const p of (state.board.projects || [])) {
+  for (const p of asArray(state.board.projects)) {
     if (!isActive(p) && p.id !== t.projectId) continue;
     projOpts.push({ value: p.id, label: p.name + (isActive(p) ? "" : "（休止中）") });
   }
@@ -674,8 +768,8 @@ function openDrawer(task) {
 
   // 担当者ピッカー。休止中でも既に担当しているなら表示する。
   const picker = document.getElementById("fAssignees");
-  const selected = new Set(t.assignees || []);
-  const pickable = (state.board.members || []).filter((m) => isActive(m) || selected.has(m.id));
+  const selected = new Set(asArray(t.assignees));
+  const pickable = asArray(state.board.members).filter((m) => isActive(m) || selected.has(m.id));
   picker.replaceChildren(...pickable.map((m) => {
     const b = el("button", "pick" + (selected.has(m.id) ? " on" : ""));
     b.type = "button";
@@ -686,9 +780,9 @@ function openDrawer(task) {
     return b;
   }));
 
-  // 履歴
+  // 履歴。不具合で文字列として保存されたデータでも開けるよう配列に正規化する
   const histWrap = document.getElementById("histWrap");
-  const hist = t.history || [];
+  const hist = asArray(t.history);
   histWrap.hidden = hist.length === 0;
   document.getElementById("fHistory").textContent = hist.join("\n");
 
@@ -729,9 +823,38 @@ function saveDrawer() {
   closeDrawer();
 }
 
+// 開いているタスクを複製する。未保存の編集があれば先に確認する。
+function duplicateDrawer() {
+  if (!editingId) return;
+  const t = asArray(state.week.tasks).find((x) => x.id === editingId);
+  if (!t) return;
+  // 担当者は並び順が違うだけで別物と見なさないよう、そろえてから比べる
+  const norm = (o) => JSON.stringify(Object.assign({}, o, { assignees: asArray(o.assignees).slice().sort() }));
+  const edited = norm(collectForm()) !== norm(currentFormOf(t));
+  if (edited && !confirm("保存していない変更があります。\n複製すると、その変更は反映されません。続けますか？")) return;
+  if (!bridge) { toast("プレビューでは複製されません"); closeDrawer(); return; }
+  send({ type: "duplicateTask", weekId: state.week.id, taskId: editingId });
+  closeDrawer();
+}
+
+// 保存済みの内容をフォームと同じ形にそろえる（未保存かどうかの判定用）
+function currentFormOf(t) {
+  return {
+    title: t.title || "",
+    description: t.description || "",
+    status: t.status,
+    due: t.due || null,
+    priority: t.priority || "normal",
+    projectId: t.projectId || null,
+    goalId: t.goalId || null,
+    continuingGoalId: t.continuingGoalId || null,
+    assignees: asArray(t.assignees),
+  };
+}
+
 function deleteDrawer() {
   if (!editingId) return;
-  const t = (state.week.tasks || []).find((x) => x.id === editingId);
+  const t = asArray(state.week.tasks).find((x) => x.id === editingId);
   if (!confirm("「" + (t ? t.title : "このタスク") + "」を削除します。よろしいですか？")) return;
   if (!bridge) { toast("プレビューでは削除されません"); closeDrawer(); return; }
   send({ type: "deleteTask", weekId: state.week.id, taskId: editingId });
@@ -746,7 +869,7 @@ function openGoalDrawer(g) {
   if (state.readOnly) { toast("共有フォルダに書き込めないため、閲覧のみです"); return; }
   editingGoalId = g.id;
 
-  const linked = (state.week.tasks || []).filter((t) => t.goalId === g.id);
+  const linked = asArray(state.week.tasks).filter((t) => t.goalId === g.id);
   document.getElementById("goalDrawerTitle").textContent = g.key + " の目標を編集";
   document.getElementById("gTitle").value = g.title || "";
   document.getElementById("gStatus").value = g.status || "running";
@@ -780,8 +903,8 @@ function saveGoalDrawer() {
 }
 
 function deleteGoalDrawer() {
-  const g = (state.week.goals || []).find((x) => x.id === editingGoalId);
-  const n = (state.week.tasks || []).filter((t) => t.goalId === editingGoalId).length;
+  const g = asArray(state.week.goals).find((x) => x.id === editingGoalId);
+  const n = asArray(state.week.tasks).filter((t) => t.goalId === editingGoalId).length;
   const msg = "「" + (g ? g.title : "この目標") + "」を削除します。"
     + (n ? "\n紐づくタスク " + n + " 件は残り、紐づけだけが外れます。" : "") + "\nよろしいですか？";
   if (!confirm(msg)) return;
@@ -806,7 +929,7 @@ function closeContDrawer() {
 
 function renderContList() {
   const list = document.getElementById("contList");
-  const goals = state.board.continuingGoals || [];
+  const goals = asArray(state.board.continuingGoals);
   if (!goals.length) {
     const p = el("p", "hint");
     p.textContent = "まだ継続目標がありません。";
@@ -873,6 +996,202 @@ function addContGoal() {
   input.value = "";
 }
 
+/* ---------------- メモ・連絡事項 ---------------- */
+// 開閉状態は共有データではなく各PCの好みなので localStorage に持つ
+const MEMO_COLLAPSED_KEY = "taskboard.memo.collapsed";
+
+function renderMemo() {
+  const section = document.getElementById("memo");
+  const notes = sortedNotes();
+  const canEdit = !state.readOnly;
+
+  // メモが1件も無く、書き込みもできないなら帯ごと隠す
+  if (!notes.length && !canEdit) { section.hidden = true; return; }
+  section.hidden = false;
+
+  document.getElementById("memoCount").textContent = notes.length;
+  document.getElementById("memoPeek").textContent = notes.length ? notes[0].text : "（まだありません）";
+  section.classList.toggle("collapsed", isMemoCollapsed());
+  document.getElementById("memoToggle").setAttribute("aria-expanded", String(!isMemoCollapsed()));
+
+  const list = document.getElementById("memoList");
+  if (!notes.length) {
+    const p = el("div", "memo-empty");
+    p.textContent = "週をまたいで覚えておきたいことや、チームへの連絡を書いておけます。";
+    list.replaceChildren(p);
+  } else {
+    list.replaceChildren(...notes.map((n) => renderNote(n, canEdit)));
+  }
+
+  document.getElementById("memoNew").disabled = !canEdit;
+  document.getElementById("memoAdd").disabled = !canEdit;
+}
+
+// 目立たせたいものを上に。同じ扱いなら新しい順（配列の順序を保つ）。
+function sortedNotes() {
+  const notes = asArray(state.board.notes).slice();
+  return notes.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+}
+
+function renderNote(n, canEdit) {
+  const row = el("div", "note" + (n.pinned ? " pin" : ""));
+
+  const pin = el("button", "pinbtn");
+  pin.type = "button";
+  pin.textContent = n.pinned ? "📌" : "○";
+  pin.title = n.pinned ? "目立たせるのをやめる" : "上に固定して目立たせる";
+  pin.disabled = !canEdit;
+  pin.onclick = () => sendMsg({ type: "updateNote", noteId: n.id, fields: { pinned: !n.pinned } });
+  row.appendChild(pin);
+
+  // 表示はリンク付きテキスト。クリックすると編集用の textarea に差し替える。
+  // （textarea のままではリンクを押せないため）
+  const view = el("div", "txt view");
+  view.appendChild(renderTextWithLinks(n.text));
+  if (canEdit) {
+    view.title = "クリックして編集";
+    view.onclick = (ev) => {
+      if (ev.target.closest("a")) return;   // リンクを押したときは編集に入らない
+      startEditNote(row, view, n);
+    };
+  }
+  row.appendChild(view);
+
+  const by = el("span", "by");
+  by.textContent = fmtNoteDate(n.createdAt) + " " + (n.author || "");
+  row.appendChild(by);
+
+  if (canEdit) {
+    const del = el("button", "del");
+    del.type = "button";
+    del.textContent = "✕";
+    del.title = "このメモを削除";
+    del.onclick = () => {
+      if (!confirm("「" + n.text.slice(0, 40) + (n.text.length > 40 ? "…" : "") + "」を削除します。よろしいですか？")) return;
+      sendMsg({ type: "deleteNote", noteId: n.id });
+    };
+    row.appendChild(del);
+  }
+  return row;
+}
+
+/* メモ内のURL・共有フォルダのパス・メールアドレスをリンクにする。
+   innerHTML を使わず DOM を組み立てるので、書かれた内容がHTMLとして解釈されることはない。 */
+// リンクの切れ目にする文字。共有フォルダ名に日本語が使われることは普通にあるので
+// 全角を一律に除外はせず、日本語の句読点と括弧だけを境界にする。
+// これが無いと「\\NAS\共有\見積、確認お願いします」のように後続の文まで飲み込む。
+const LINK_STOP = "\\s<>\"'、。，．・…！？　（）〈〉《》「」『』【】〔〕｛｝［］";
+const LINK_RE = new RegExp(
+  "(https?://[^" + LINK_STOP + "]+)" +          // http / https
+  "|(\\\\\\\\[^" + LINK_STOP + "|*?]+)" +       // \\サーバー\共有\... （UNCパス）
+  "|([A-Za-z]:\\\\[^" + LINK_STOP + "|*?]+)" +  // C:\... （ローカルパス）
+  "|([\\w.+-]+@[\\w-]+\\.[\\w.-]+)",            // メールアドレス
+  "g"
+);
+// 文末の句読点や閉じ括弧はリンクに含めない
+const TRAIL_RE = /[。、．，,.;:!?！？）)\]】」』>＞]+$/;
+
+function renderTextWithLinks(text) {
+  const frag = document.createDocumentFragment();
+  const s = String(text == null ? "" : text);
+  let last = 0;
+  LINK_RE.lastIndex = 0;
+  let m;
+  while ((m = LINK_RE.exec(s)) !== null) {
+    const target = m[0].replace(TRAIL_RE, "");
+    if (!target) { LINK_RE.lastIndex = m.index + m[0].length; continue; }
+    if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
+
+    const a = document.createElement("a");
+    a.className = "lnk";
+    a.href = "#";
+    a.textContent = target;
+    a.title = target + "（クリックで開きます）";
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openLink(target);
+    };
+    frag.appendChild(a);
+
+    last = m.index + target.length;
+    LINK_RE.lastIndex = last;
+  }
+  if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+  return frag;
+}
+
+// WebView2 の中で開くとアプリごと遷移してしまうので、ホストに開いてもらう
+function openLink(target) {
+  if (!bridge) { toast("プレビューでは開けません: " + target); return; }
+  send({ type: "openLink", url: target });
+}
+
+// 表示 → 編集への切り替え
+function startEditNote(row, view, n) {
+  const ta = document.createElement("textarea");
+  ta.className = "txt";
+  ta.value = n.text;
+  ta.rows = 1;
+  ta.maxLength = 200;
+  const fit = () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; };
+
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const v = ta.value.trim();
+    if (save && v && v !== n.text) {
+      sendMsg({ type: "updateNote", noteId: n.id, fields: { text: v } });
+      return;   // 保存すると再描画されるので戻す必要はない
+    }
+    if (save && !v) toast("メモは空にできません");
+    // 変更なし・取りやめのときは表示に戻す
+    const back = el("div", "txt view");
+    back.appendChild(renderTextWithLinks(n.text));
+    back.title = "クリックして編集";
+    back.onclick = (ev) => { if (!ev.target.closest("a")) startEditNote(row, back, n); };
+    row.replaceChild(back, ta);
+  };
+
+  ta.onkeydown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+  };
+  ta.onblur = () => finish(true);
+  ta.oninput = fit;
+
+  row.replaceChild(ta, view);
+  fit();
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+
+function fmtNoteDate(iso) {
+  if (!iso) return "";
+  const s = String(iso).slice(5).replace("-", "/");
+  return s || "";
+}
+
+function isMemoCollapsed() {
+  try { return localStorage.getItem(MEMO_COLLAPSED_KEY) === "1"; } catch (e) { return false; }
+}
+
+function toggleMemo() {
+  const now = !isMemoCollapsed();
+  try { localStorage.setItem(MEMO_COLLAPSED_KEY, now ? "1" : "0"); } catch (e) { /* 使えなくても動作に影響なし */ }
+  renderMemo();
+}
+
+function addNote() {
+  const input = document.getElementById("memoNew");
+  const v = input.value.trim();
+  if (!v) { toast("内容を入力してください"); input.focus(); return; }
+  if (!bridge) { toast("プレビューでは保存されません"); return; }
+  send({ type: "createNote", text: v });
+  input.value = "";
+}
+
 /* ---------------- メンバー・案件の設定ドロワー ---------------- */
 const PALETTE = [
   "#2F6E86", "#8A5A2B", "#5B6E33", "#7A4A6E", "#43607F", "#8C4A45",
@@ -903,7 +1222,7 @@ function renderSettings() {
 
 function renderMemberList() {
   const list = document.getElementById("memberList");
-  const members = state.board.members || [];
+  const members = asArray(state.board.members);
   if (!members.length) {
     const p = el("p", "hint");
     p.textContent = "まだメンバーがいません。";
@@ -993,14 +1312,14 @@ function confirmDeleteMember(m) {
 
 // 現在読み込んでいる週のぶんだけ数える（全期間はホスト側の loadUsage が持つ）
 function countAssigned(memberId) {
-  const tasks = state.week.tasks || [];
-  const n = tasks.filter((t) => (t.assignees || []).includes(memberId)).length;
+  const tasks = asArray(state.week.tasks);
+  const n = tasks.filter((t) => asArray(t.assignees).includes(memberId)).length;
   return state.week.closed ? { unclosed: 0, closedOnly: n } : { unclosed: n, closedOnly: 0 };
 }
 
 function renderProjectList() {
   const list = document.getElementById("projectList");
-  const projects = state.board.projects || [];
+  const projects = asArray(state.board.projects);
   if (!projects.length) {
     const p = el("p", "hint");
     p.textContent = "まだ案件がありません。";
@@ -1035,7 +1354,7 @@ function renderProjectList() {
     const del = el("button", "btn danger");
     del.textContent = "削除";
     del.onclick = () => {
-      const n = (state.week.tasks || []).filter((t) => t.projectId === p.id).length;
+      const n = asArray(state.week.tasks).filter((t) => t.projectId === p.id).length;
       let msg = "案件「" + p.name + "」を削除します。";
       if (n) msg += "\n今週のタスク " + n + " 件から紐づけが外れます（締めた週の記録は変わりません）。";
       msg += "\n\n終わった案件なら「休止する」をお勧めします。よろしいですか？";
@@ -1070,10 +1389,113 @@ function sendMsg(msg) {
   send(msg);
 }
 
+// 配列であることを保証する。PowerShell 側の書き出し方によっては
+// 1件しかない配列が単体の値になって届くことがあるため、受け側でも守っておく。
+function asArray(v) {
+  if (Array.isArray(v)) return v;
+  if (v === null || v === undefined || v === "") return [];
+  return [v];
+}
+
 // active が未設定の既存データは「有効」とみなす
 function isActive(x) { return !x || x.active !== false; }
-function activeMembers() { return (state.board.members || []).filter(isActive); }
-function activeProjects() { return (state.board.projects || []).filter(isActive); }
+function activeMembers() { return asArray(state.board.members).filter(isActive); }
+function activeProjects() { return asArray(state.board.projects).filter(isActive); }
+
+/* ---------------- 締めの解除 ---------------- */
+// ホストに「解除したら何が起きるか」を問い合わせ、結果が届いたら確認画面を出す
+function askReopen() {
+  if (!bridge) { toast("プレビューでは解除できません"); return; }
+  send({ type: "checkReopen", weekId: state.week.id });
+}
+
+function showReopenDialog(c) {
+  const body = document.getElementById("reopenBody");
+  body.replaceChildren();
+
+  document.getElementById("reopenTitle").textContent = c.weekId + " の締めを解除";
+  const sub = [];
+  if (c.closedAt) sub.push(c.closedAt + " に " + (c.closedBy || "不明") + " が締めました");
+  document.getElementById("reopenSub").textContent = sub.join(" / ");
+
+  const confirmBtn = document.getElementById("reopenConfirm");
+
+  if (!c.canReopen) {
+    body.appendChild(noteBlock("warn", c.reason));
+    confirmBtn.hidden = true;
+  } else {
+    confirmBtn.hidden = false;
+    body.appendChild(noteBlock("", c.weekId + " をもう一度編集できる状態に戻します。この週の目標は「進行中」に戻ります。"));
+
+    if (c.reason) body.appendChild(noteBlock("warn", c.reason));
+
+    const remove = asArray(c.removeTasks);
+    const keep = asArray(c.keepTasks);
+
+    if (c.nextWeekId) {
+      if (remove.length) {
+        body.appendChild(listBlock(
+          c.nextWeekId + " から取り消すもの（" + remove.length + "件）",
+          remove,
+          "締めたときに運ばれた分です。まだ誰も手を付けていないので取り消します。"
+        ));
+      }
+      if (keep.length) {
+        body.appendChild(listBlock(
+          c.nextWeekId + " に残すもの（" + keep.length + "件）",
+          keep,
+          "着手済み・編集済みのため取り消しません。不要なら次週で手動で削除してください。"
+        ));
+      }
+      if (!remove.length && !keep.length) {
+        body.appendChild(noteBlock("", c.nextWeekId + " に持ち越したものはありません。"));
+      }
+      if (c.removeGoals) {
+        body.appendChild(noteBlock("", "持ち越した目標 " + c.removeGoals + " 件も、残すタスクが無ければ " + c.nextWeekId + " から取り消します。"));
+      }
+    }
+  }
+
+  document.getElementById("reopenScrim").hidden = false;
+  document.getElementById("reopenModal").hidden = false;
+}
+
+function noteBlock(kind, text) {
+  const d = el("div", "rp-note" + (kind ? " " + kind : ""));
+  d.textContent = text;
+  return d;
+}
+
+function listBlock(title, items, hint) {
+  const wrap = el("div", "rp-sec");
+  const h = el("div", "rp-h");
+  h.textContent = title;
+  wrap.appendChild(h);
+  const ul = el("ul", "rp-list");
+  for (const it of items) {
+    const li = el("li");
+    li.textContent = it;
+    ul.appendChild(li);
+  }
+  wrap.appendChild(ul);
+  if (hint) {
+    const p = el("div", "rp-hint");
+    p.textContent = hint;
+    wrap.appendChild(p);
+  }
+  return wrap;
+}
+
+function closeReopenDialog() {
+  document.getElementById("reopenScrim").hidden = true;
+  document.getElementById("reopenModal").hidden = true;
+}
+
+function confirmReopen() {
+  if (!bridge) { closeReopenDialog(); return; }
+  send({ type: "reopenWeek", weekId: state.week.id });
+  closeReopenDialog();
+}
 
 /* ---------------- 週の締めダイアログ ---------------- */
 const judgements = {};        // goalId -> 'achieved' | 'carried'
@@ -1228,7 +1650,7 @@ function chip(text, extra) { const c = el("span", "chip" + (extra ? " " + extra 
 function chipTag(key, isBg) { const c = el("span", "gtag" + (isBg ? " bg" : "")); c.textContent = key; return c; }
 function avatar(m) { const a = el("span", "av"); a.style.background = m.color; a.textContent = m.initial; a.title = m.name; return a; }
 function placeholder(text) { const p = el("div", "placeholder"); p.textContent = text; return p; }
-function memberById(id) { return (state.board.members || []).find((m) => m.id === id); }
+function memberById(id) { return asArray(state.board.members).find((m) => m.id === id); }
 function statusLabel(k) { const s = STATUSES.find((x) => x.key === k); return s ? s.label : k; }
 function statusJa(s) { return { running: "進行中", achieved: "達成", carried: "持ち越し" }[s] || s; }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -1283,6 +1705,16 @@ function buildStandaloneState() {
     continuingGoals: [
       { id: "cg1", key: "S", title: "社内手順書の整備", active: true, totalDone: 14 },
       { id: "cg2", key: "T", title: "検証環境の安定化", active: true, totalDone: 8 },
+    ],
+    projects: [
+      { id: "p-a", name: "A社更新", active: true },
+      { id: "p-b", name: "B社案件", active: true },
+      { id: "p-in", name: "社内", active: true },
+    ],
+    notes: [
+      { id: "n1", text: "月末の請求処理は27日までに完了させること。締め日が変わりました。", author: "田中", createdAt: "2026-07-21", pinned: true },
+      { id: "n2", text: "定例会は毎週水曜15:00〜（会議室B）", author: "佐藤", createdAt: "2026-07-13", pinned: false },
+      { id: "n3", text: "B社の窓口が8月から山田さんに変わります", author: "鈴木", createdAt: "2026-07-22", pinned: false },
     ],
   };
   const week = {
