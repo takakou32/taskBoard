@@ -59,7 +59,7 @@ function handleHostMessage(msg) {
       state = msg;
       state.view = view;
       state.retro = sameWeek ? retro : null;   // 週が変わったら振り返りは取り直す
-      if (!sameWeek) filterGoalId = null;
+      if (!sameWeek) { filterGoalId = null; memoCollapsed = null; }   // 週が変わったらメモの開閉も決め直す
       render();
       break;
     }
@@ -130,6 +130,7 @@ function wireToolbar() {
   });
   document.getElementById("filterClear").onclick = clearFilter;
   document.getElementById("memoToggle").onclick = toggleMemo;
+  document.getElementById("viewRoot").addEventListener("scroll", autoCollapseMemo, { passive: true });
   document.getElementById("memoAdd").onclick = addNote;
   document.getElementById("memoNew").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addNote(); }
@@ -392,17 +393,16 @@ function renderCard(t) {
     wireDrag(card, t);
   }
 
+  // タグ類とタイトルを1段に統合（縦の枚数を稼ぐ）。タグが無ければタイトルだけ
   const row = el("div", "row");
   const goalTag = goalTagFor(t);
   if (goalTag) row.appendChild(goalTag);
   if (t.carriedFrom) row.appendChild(chip("↻ " + shortWeek(t.carriedFrom)));
   if (t.priority === "high") row.appendChild(chip("高", "pri-h"));
-  if (!goalTag && !t.carriedFrom && t.priority !== "high") row.appendChild(chip("紐づけなし"));
-  card.appendChild(row);
-
   const title = el("div", "title");
   title.textContent = t.title;
-  card.appendChild(title);
+  row.appendChild(title);
+  card.appendChild(row);
 
   if (lockedBy) {
     const lb = el("div", "lockbar");
@@ -1068,8 +1068,10 @@ function addContGoal() {
 }
 
 /* ---------------- メモ・連絡事項 ---------------- */
-// 開閉状態は共有データではなく各PCの好みなので localStorage に持つ
-const MEMO_COLLAPSED_KEY = "taskboard.memo.collapsed";
+// 開閉状態はセッション中だけメモリに持つ（起動・週切替のたびに「ピン留めの有無」で決め直すため保存しない）。
+// null = 未決定（次の描画でピン留め有無から決める）。手で開閉／スクロールで畳んだら以後はその値を優先。
+let memoCollapsed = null;
+const MEMO_AUTO_COLLAPSE_PX = 40;
 
 function renderMemo() {
   const section = document.getElementById("memo");
@@ -1082,8 +1084,9 @@ function renderMemo() {
 
   document.getElementById("memoCount").textContent = notes.length;
   document.getElementById("memoPeek").textContent = notes.length ? notes[0].text : "（まだありません）";
-  section.classList.toggle("collapsed", isMemoCollapsed());
-  document.getElementById("memoToggle").setAttribute("aria-expanded", String(!isMemoCollapsed()));
+  if (memoCollapsed === null) memoCollapsed = !notes.some((n) => n.pinned);
+  section.classList.toggle("collapsed", memoCollapsed);
+  document.getElementById("memoToggle").setAttribute("aria-expanded", String(!memoCollapsed));
 
   const list = document.getElementById("memoList");
   if (!notes.length) {
@@ -1244,13 +1247,18 @@ function fmtNoteDate(iso) {
   return s || "";
 }
 
-function isMemoCollapsed() {
-  try { return localStorage.getItem(MEMO_COLLAPSED_KEY) === "1"; } catch (e) { return false; }
+function toggleMemo() {
+  memoCollapsed = !memoCollapsed;
+  renderMemo();
 }
 
-function toggleMemo() {
-  const now = !isMemoCollapsed();
-  try { localStorage.setItem(MEMO_COLLAPSED_KEY, now ? "1" : "0"); } catch (e) { /* 使えなくても動作に影響なし */ }
+// 看板を下へ読み進めたらメモ欄を畳んで高さを譲る（開き直しはしない）。入力・編集中は畳まない。
+function autoCollapseMemo() {
+  if (memoCollapsed !== false) return;
+  const section = document.getElementById("memo");
+  if (section.hidden || section.contains(document.activeElement)) return;
+  if (document.getElementById("viewRoot").scrollTop <= MEMO_AUTO_COLLAPSE_PX) return;
+  memoCollapsed = true;
   renderMemo();
 }
 

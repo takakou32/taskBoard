@@ -176,7 +176,7 @@ body {
   display: grid; grid-template-columns: 220px repeat(4, minmax(200px, 1fr));
   gap: 12px; padding: 14px; align-items: start; min-width: 1040px; min-height: 100%;
 }
-.col { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.col { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .col-head {
   display: flex; align-items: center; gap: 8px; padding: 7px 10px 7px 9px;
   border-radius: 6px; border: 1px solid var(--rule); background: var(--surface);
@@ -188,7 +188,7 @@ body {
 .c-doing { --sc: var(--st-doing); --sc-bg: var(--st-doing-bg); }
 .c-review { --sc: var(--st-review); --sc-bg: var(--st-review-bg); }
 .c-done { --sc: var(--st-done); --sc-bg: var(--st-done-bg); }
-.dropzone { display: flex; flex-direction: column; gap: 9px; min-height: 60px; border-radius: 6px; padding: 2px; transition: background .12s; }
+.dropzone { display: flex; flex-direction: column; gap: 6px; min-height: 60px; border-radius: 6px; padding: 2px; transition: background .12s; }
 .dropzone.over { background: var(--accent-soft); outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* 挿入位置の指示線。カードの上辺／ゾーン末尾に出す。 */
 .card.insert-before { box-shadow: 0 -3px 0 -1px var(--accent), 0 1px 1px rgba(0,0,0,.03); }
@@ -230,12 +230,13 @@ body {
 .unlinked.sel { border-style: solid; border-color: var(--accent); color: var(--ink); }
 
 /* card */
-.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 9px 10px; display: flex; flex-direction: column; gap: 7px; box-shadow: 0 1px 1px rgba(0,0,0,.03); cursor: grab; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; display: flex; flex-direction: column; gap: 4px; box-shadow: 0 1px 1px rgba(0,0,0,.03); cursor: grab; }
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: .5; }
 .card.dim { opacity: .32; }
-.card .row { display: flex; align-items: center; gap: 6px; }
-.card .title { font-size: 12.5px; line-height: 1.5; font-weight: 500; }
+.card .row { display: flex; align-items: flex-start; gap: 5px; }
+.card .row .gtag, .card .row .chip { flex: none; margin-top: 2px; }  /* 先頭行の高さをタイトル(1.5行高)にそろえる */
+.card .title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.5; font-weight: 500; }
 .gtag { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 0 4px; flex: none; }
 .gtag.bg { color: var(--ink-3); border-color: var(--ink-3); }
 .chip { font-size: 10px; font-family: var(--font-mono); letter-spacing: .04em; padding: 1px 6px; border-radius: 3px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
@@ -245,7 +246,7 @@ body {
 .meta .sp { margin-left: auto; }
 .meta .subc { color: var(--ink-2); }
 .meta .subc.all { color: var(--st-done); font-weight: 700; }
-.card .av { width: 19px; height: 19px; font-size: 9px; }
+.card .av { width: 17px; height: 17px; font-size: 9px; }
 .card.done .title { color: var(--ink-2); }
 .card.carried { border-left: 3px solid var(--st-doing); }
 .card.locked { cursor: not-allowed; background: var(--surface-2); }
