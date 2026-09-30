@@ -21,6 +21,7 @@
     <input class="search" id="search" placeholder="タスク・目標を検索…" autocomplete="off">
     <button class="btn on" data-view="board">看板</button>
     <button class="btn" data-view="assignee">担当者</button>
+    <button class="btn" data-view="schedule">スケジュール</button>
     <button class="btn" data-view="retro">振り返り</button>
     <button class="btn" id="btnSettings" title="メンバーと案件">⚙</button>
     <span class="spacer"></span>
@@ -156,6 +157,59 @@
       <span class="spacer"></span>
       <button class="btn" id="gCancel">キャンセル</button>
       <button class="btn primary" id="gSave">保存</button>
+    </div>
+  </aside>
+
+  <!-- スケジュール（予定）編集ドロワー -->
+  <aside class="drawer" id="schedDrawer" hidden aria-label="予定の編集">
+    <div class="drawer-h">
+      <span class="drawer-title" id="sdTitleH">予定を編集</span>
+      <button class="btn icon" id="sdClose" title="閉じる">✕</button>
+    </div>
+    <div class="drawer-b">
+      <label class="field">
+        <span class="k">種類</span>
+        <select id="sdKind"></select>
+      </label>
+      <label class="field">
+        <span class="k">タイトル</span>
+        <input type="text" id="sdTitle" placeholder="例: 画面設計" maxlength="100">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span class="k">案件</span>
+          <select id="sdProject"></select>
+        </label>
+        <label class="field" id="sdParentWrap">
+          <span class="k">親工程</span>
+          <select id="sdParent"></select>
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field">
+          <span class="k" id="sdStartK">開始日</span>
+          <input type="date" id="sdStart">
+        </label>
+        <label class="field" id="sdEndWrap">
+          <span class="k">終了日</span>
+          <input type="date" id="sdEnd">
+        </label>
+      </div>
+      <p class="hint" id="sdAuto" hidden></p>
+      <div class="field">
+        <span class="k">担当</span>
+        <div class="picker" id="sdAssignees"></div>
+      </div>
+      <div class="field" id="sdHistWrap" hidden>
+        <span class="k">履歴</span>
+        <div class="hist" id="sdHistory"></div>
+      </div>
+    </div>
+    <div class="drawer-f">
+      <button class="btn danger" id="sdDelete">削除</button>
+      <span class="spacer"></span>
+      <button class="btn" id="sdCancel">キャンセル</button>
+      <button class="btn primary" id="sdSave">保存</button>
     </div>
   </aside>
 

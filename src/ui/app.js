@@ -61,8 +61,13 @@ function handleHostMessage(msg) {
       state.retro = sameWeek ? retro : null;   // 週が変わったら振り返りは取り直す
       if (!sameWeek) { filterGoalId = null; memoCollapsed = null; }   // 週が変わったらメモの開閉も決め直す
       render();
+      if (state.view === "schedule") schedRequestLinks();
       break;
     }
+    case "scheduleLinks":
+      schedLinks = asArray(msg.links);
+      if (state && state.view === "schedule") render();
+      break;
     case "retro":
       if (state) { state.retro = msg.weeks || []; render(); }
       break;
@@ -118,6 +123,7 @@ function wireToolbar() {
   document.getElementById("scrim").onclick = () => {
     if (!document.getElementById("drawer").hidden) closeDrawer();
     else if (!document.getElementById("goalDrawer").hidden) closeGoalDrawer();
+    else if (!document.getElementById("schedDrawer").hidden) closeSchedDrawer();
     else if (!document.getElementById("contDrawer").hidden) closeContDrawer();
     else if (!document.getElementById("setDrawer").hidden) closeSettings();
   };
@@ -136,6 +142,7 @@ function wireToolbar() {
     if (e.key === "Enter") { e.preventDefault(); addNote(); }
   });
 
+  wireScheduleDrawer();
   document.getElementById("goalClose").onclick = closeGoalDrawer;
   document.getElementById("gCancel").onclick = closeGoalDrawer;
   document.getElementById("gSave").onclick = saveGoalDrawer;
@@ -171,6 +178,7 @@ function wireToolbar() {
     if (e.key !== "Escape") return;
     if (!document.getElementById("drawer").hidden) closeDrawer();
     else if (!document.getElementById("goalDrawer").hidden) closeGoalDrawer();
+    else if (!document.getElementById("schedDrawer").hidden) closeSchedDrawer();
     else if (!document.getElementById("contDrawer").hidden) closeContDrawer();
     else if (!document.getElementById("setDrawer").hidden) closeSettings();
     else if (!document.getElementById("closeModal").hidden) closeCloseDialog();
@@ -191,6 +199,7 @@ function setView(view) {
   });
   state.view = view;
   render();
+  if (view === "schedule") schedRequestLinks();
 }
 
 function changeWeekBy(delta) {
@@ -218,6 +227,7 @@ function renderInner() {
   const root = document.getElementById("viewRoot");
   if (state.view === "assignee") root.replaceChildren(renderAssigneeView());
   else if (state.view === "retro") root.replaceChildren(renderRetroView());
+  else if (state.view === "schedule") root.replaceChildren(renderScheduleView());
   else root.replaceChildren(renderBoard());
 
   // ドロワーを開いたまま更新が届いたら、一覧も追随させる
@@ -308,6 +318,64 @@ function renderBoard() {
   return board;
 }
 
+// ---- 目標レーン: 予定（スケジュール）との結びつけ ----
+// 予定の参照（schedItems / schedById）と目標化（schedMakeGoal）はスケジュール画面の区画と共用する
+let laneSchedExpanded = false;  // 「ほか N 件」を開いているか
+// 予定 → 「案件名 › 工程名 › 作業名」（無い段は省く）
+function lanePathParts(it) {
+  const parts = [];
+  const proj = it.projectId && asArray(state.board.projects).find((p) => p.id === it.projectId);
+  if (proj) parts.push(proj.name);
+  const par = it.parentId ? schedById(it.parentId) : null;
+  if (par && par.kind === "phase") parts.push(par.title);
+  parts.push(it.title);
+  return parts;
+}
+function laneSchedCandidates() {
+  const r = state.week && state.week.range;
+  if (!r) return [];
+  const items = schedItems();
+  const used = new Set(asArray(state.week.goals).map((g) => g.scheduleId).filter(Boolean));
+  const hasChild = new Set(items.map((x) => x.parentId).filter(Boolean));
+  return items.filter((it) => {
+    if (used.has(it.id)) return false;
+    if (it.kind === "phase" && hasChild.has(it.id)) return false;
+    return it.start <= r.end && it.end >= r.start;
+  });
+}
+function laneSchedRow(it) {
+  const row = el("div", "sched-row");
+  const txt = el("div", "st");
+  const ms = it.kind === "milestone";
+  txt.textContent = (ms ? "◆ " : "") + lanePathParts(it).join(" › ") + (ms ? "（" + it.start.slice(5).replace("-", "/") + "）" : "");
+  txt.title = txt.textContent;
+  row.appendChild(txt);
+  const btn = el("button", "btn sm");
+  btn.textContent = "目標にする";
+  btn.onclick = () => schedMakeGoal(it, state.week.id);
+  row.appendChild(btn);
+  return row;
+}
+function renderLaneSchedule() {
+  if (state.week.closed || state.readOnly) return null;
+  const cands = laneSchedCandidates();
+  if (!cands.length) return null;
+  const box = el("div", "lane-sched");
+  const sep = el("div", "lane-sep");
+  sep.textContent = "今週の予定";
+  box.appendChild(sep);
+  const LIMIT = 5;
+  const shown = laneSchedExpanded ? cands : cands.slice(0, LIMIT);
+  for (const it of shown) box.appendChild(laneSchedRow(it));
+  if (cands.length > LIMIT) {
+    const more = el("button", "sched-more");
+    more.textContent = laneSchedExpanded ? "たたむ" : "ほか " + (cands.length - LIMIT) + " 件";
+    more.onclick = () => { laneSchedExpanded = !laneSchedExpanded; render(); };
+    box.appendChild(more);
+  }
+  return box;
+}
+
 function renderGoalLane() {
   const lane = el("aside", "goal-lane");
   const title = el("div", "lane-title");
@@ -328,6 +396,8 @@ function renderGoalLane() {
       + (g.carryStreak >= 2 ? "（" + g.carryStreak + "週連続）" : "") + "</div>";
     html += '<div class="bar"><i style="width:' + pct + '%"></i></div>'
       + '<div class="gmeta"><span>' + done + "/" + linked.length + ' 完了</span><span class="sp"></span></div>';
+    const sc = g.scheduleId ? schedById(g.scheduleId) : null;
+    if (sc) html += '<div class="sched-link">📅 ' + esc(lanePathParts(sc).slice(-2).join(" › ")) + "</div>";
     node.innerHTML = html;
     node.onclick = () => toggleFilter(g.id);
     if (!state.week.closed && !state.readOnly) {
@@ -351,6 +421,9 @@ function renderGoalLane() {
     };
     lane.appendChild(addGoal);
   }
+
+  const schedBox = renderLaneSchedule();
+  if (schedBox) lane.appendChild(schedBox);
 
   const contGoals = asArray(state.board.continuingGoals).filter(isActive);
   if (contGoals.length || !state.readOnly) {
@@ -1723,6 +1796,524 @@ function fillSelect(id, options, value) {
   sel.value = value == null ? "" : value;
 }
 
+/* ---------------- スケジュール（ガント） ---------------- */
+// 案件 → 工程 → 作業/マイルストーン の3段。データは state.schedule.items（ホストの schedule.json）。
+const SCHED_DAY_W = 22;
+const SCHED_WEEKS = 13;
+const SCHED_LS_KEY = "taskboard.schedule.collapsed";
+const SCHED_KINDS = [
+  { value: "phase", label: "工程" },
+  { value: "task", label: "作業" },
+  { value: "milestone", label: "マイルストーン" },
+];
+let schedStart = null;        // 表示開始日（月曜）。null = 初期位置（今週の月曜の2週前）
+let schedLinks = [];          // scheduleLinks の links
+let schedCollapsed = schedLoadCollapsed();
+let schedMenuEl = null;
+let schedEditingId = null;
+
+function schedLoadCollapsed() {
+  try {
+    const raw = localStorage.getItem(SCHED_LS_KEY);
+    const a = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(a) ? a : []);
+  } catch (e) { return new Set(); }
+}
+function schedSaveCollapsed() {
+  try { localStorage.setItem(SCHED_LS_KEY, JSON.stringify(Array.from(schedCollapsed))); } catch (e) { /* 保存できなくても動く */ }
+}
+
+/* 日付ユーティリティ（"yyyy-MM-dd" を UTC で扱い、夏時間などに左右されないようにする） */
+function schedPad(n) { return String(n).padStart(2, "0"); }
+function schedParse(iso) { const p = String(iso).split("-"); return Date.UTC(+p[0], +p[1] - 1, +p[2]); }
+function schedFmt(ms) { const d = new Date(ms); return d.getUTCFullYear() + "-" + schedPad(d.getUTCMonth() + 1) + "-" + schedPad(d.getUTCDate()); }
+function schedAddDays(iso, n) { return schedFmt(schedParse(iso) + n * 86400000); }
+function schedDiff(a, b) { return Math.round((schedParse(b) - schedParse(a)) / 86400000); }
+function schedMonday(iso) { const dow = (new Date(schedParse(iso)).getUTCDay() + 6) % 7; return schedAddDays(iso, -dow); }
+// ISO週（木曜が属する年の週）。"2026-W40" 形式の週IDを返す
+function schedWeekIdOf(iso) {
+  const ms = schedParse(iso);
+  const dow = (new Date(ms).getUTCDay() + 6) % 7;
+  const thu = ms + (3 - dow) * 86400000;
+  const y = new Date(thu).getUTCFullYear();
+  const w = Math.floor((thu - Date.UTC(y, 0, 1)) / 86400000 / 7) + 1;
+  return y + "-W" + schedPad(w);
+}
+// 週ID → その週の月曜（不正なら null）
+function schedWeekMonday(weekId) {
+  const m = /^(\d+)-W(\d+)$/.exec(String(weekId));
+  if (!m) return null;
+  const jan4 = Date.UTC(+m[1], 0, 4);
+  const dow = (new Date(jan4).getUTCDay() + 6) % 7;
+  return schedFmt(jan4 - dow * 86400000 + (+m[2] - 1) * 7 * 86400000);
+}
+function schedToday() { return state.today || todayISO(); }
+function schedDefaultStart() { return schedAddDays(schedMonday(schedToday()), -14); }
+
+/* データ */
+function schedItems() { return asArray(state && state.schedule && state.schedule.items); }
+function schedById(id) { return schedItems().find((i) => i.id === id) || null; }
+function schedCmp(a, b) {
+  const pa = a.period, pb = b.period;
+  if (pa.start !== pb.start) return pa.start < pb.start ? -1 : 1;
+  const ta = a.item.title || "", tb = b.item.title || "";
+  return ta < tb ? -1 : ta > tb ? 1 : 0;
+}
+function schedKids(phaseId) { return schedItems().filter((i) => i.kind !== "phase" && i.parentId === phaseId); }
+// 工程は子があれば子の最小start〜最大end、なければ自身
+function schedPeriodOf(item) {
+  if (item.kind === "phase") {
+    const kids = schedKids(item.id).filter((k) => k.start && k.end);
+    if (kids.length) {
+      return {
+        start: kids.reduce((m, k) => (k.start < m ? k.start : m), kids[0].start),
+        end: kids.reduce((m, k) => (k.end > m ? k.end : m), kids[0].end),
+        auto: true,
+      };
+    }
+  }
+  return { start: item.start, end: item.end || item.start, auto: false };
+}
+function schedNode(item) { return { item: item, period: schedPeriodOf(item), kids: [] }; }
+
+// 案件ごとの木を作る。projects の順、最後に「案件なし」
+function schedTree() {
+  const items = schedItems();
+  const phaseIds = new Set(items.filter((i) => i.kind === "phase").map((i) => i.id));
+  const projects = asArray(state.board.projects);
+  const known = new Set(projects.map((p) => p.id));
+  const groups = [];
+  const mk = (project) => {
+    const mine = items.filter((i) => (project ? i.projectId === project.id : !i.projectId || !known.has(i.projectId)));
+    const top = [];
+    for (const i of mine) {
+      if (i.kind === "phase") {
+        const n = schedNode(i);
+        n.kids = schedKids(i.id).map(schedNode).sort(schedCmp);
+        top.push(n);
+      } else if (!(i.parentId && phaseIds.has(i.parentId))) {
+        top.push(schedNode(i));
+      }
+    }
+    top.sort(schedCmp);
+    return { project: project, top: top };
+  };
+  for (const p of projects) {
+    const g = mk(p);
+    if (g.top.length || isActive(p)) groups.push(g);
+  }
+  const none = mk(null);
+  if (none.top.length) groups.push(none);
+  return groups;
+}
+
+// 予定IDごとの目標リンク。工程は子の分もまとめる
+function schedLinksFor(ids) {
+  const set = new Set(ids);
+  return schedLinks.filter((l) => set.has(l.scheduleId));
+}
+function schedLinkTitle(l) {
+  return shortWeek(l.weekId) + (l.key ? " " + l.key : "") + ": " + (l.title || "");
+}
+// 終了日を過ぎても、結びついた目標のうち最新週のものが達成されていない
+function schedIsOverrun(period, links) {
+  if (!links.length || !period.end || period.end >= schedToday()) return false;
+  let latest = links[0];
+  for (const l of links) if (String(l.weekId) > String(latest.weekId)) latest = l;
+  return latest.status !== "achieved";
+}
+
+function schedRequestLinks() { if (bridge) send({ type: "getScheduleLinks" }); }
+
+/* 描画 */
+function renderScheduleView() {
+  schedCloseMenu();
+  const ro = !!state.readOnly;
+  const from = schedStart || schedDefaultStart();
+  const days = SCHED_WEEKS * 7;
+  const weekW = SCHED_DAY_W * 7;
+  const today = schedToday();
+  const gridW = 260 + days * SCHED_DAY_W;
+
+  const wrap = el("div", "sched-wrap");
+  const bar = el("div", "sched-bar");
+  const mkBtn = (text, fn, cls) => {
+    const b = el("button", "btn" + (cls ? " " + cls : ""));
+    b.type = "button"; b.textContent = text; b.onclick = guard("スケジュール操作", fn);
+    return b;
+  };
+  bar.appendChild(mkBtn("‹ 4週", () => { schedStart = schedAddDays(from, -28); render(); }));
+  bar.appendChild(mkBtn("今日", () => { schedStart = null; render(); }));
+  bar.appendChild(mkBtn("4週 ›", () => { schedStart = schedAddDays(from, 28); render(); }));
+  const range = el("span", "s-range");
+  range.textContent = from.replace(/-/g, "/") + " – " + schedAddDays(from, days - 1).replace(/-/g, "/");
+  bar.appendChild(range);
+  if (!ro) {
+    const sp = el("span", "spacer"); bar.appendChild(sp);
+    bar.appendChild(mkBtn("＋ 工程", () => openSchedDrawer(null, { kind: "phase" }), "primary"));
+    bar.appendChild(mkBtn("＋ 作業", () => openSchedDrawer(null, { kind: "task" }), "primary"));
+  }
+  wrap.appendChild(bar);
+
+  const grid = el("div", "sched");
+  grid.style.width = gridW + "px";
+  grid.style.setProperty("--dw", SCHED_DAY_W + "px");
+
+  const mkRow = (cls) => {
+    const row = el("div", "s-row" + (cls ? " " + cls : ""));
+    const name = el("div", "s-name");
+    const cells = el("div", "s-cells");
+    cells.style.width = days * SCHED_DAY_W + "px";
+    row.appendChild(name); row.appendChild(cells);
+    return { row: row, name: name, cells: cells };
+  };
+  const todayIdx = schedDiff(from, today);
+  const addToday = (cells) => {
+    if (todayIdx < 0 || todayIdx >= days) return;
+    const t = el("i", "s-today");
+    t.style.left = todayIdx * SCHED_DAY_W + Math.floor(SCHED_DAY_W / 2) + "px";
+    cells.appendChild(t);
+  };
+
+  /* 見出し3段（月／週番号／日） */
+  const head = el("div", "s-head");
+  const hMonth = mkRow("s-h1"), hWeek = mkRow("s-h2"), hDay = mkRow("s-h3");
+  let segStart = 0;
+  for (let i = 0; i <= days; i++) {
+    const cur = i < days ? schedAddDays(from, i).slice(0, 7) : null;
+    const prev = schedAddDays(from, segStart).slice(0, 7);
+    if (i === days || cur !== prev) {
+      const s = el("span", "s-mon");
+      s.style.left = segStart * SCHED_DAY_W + "px";
+      s.style.width = (i - segStart) * SCHED_DAY_W + "px";
+      s.textContent = i - segStart >= 4 ? prev.slice(0, 4) + "/" + (+prev.slice(5)) + "月" : "";
+      hMonth.cells.appendChild(s);
+      segStart = i;
+    }
+  }
+  for (let w = 0; w < SCHED_WEEKS; w++) {
+    const s = el("span", "s-wk-h");
+    s.style.left = w * weekW + "px"; s.style.width = weekW + "px";
+    const id = schedWeekIdOf(schedAddDays(from, w * 7));
+    s.textContent = shortWeek(id);
+    s.title = id;
+    hWeek.cells.appendChild(s);
+  }
+  for (let i = 0; i < days; i++) {
+    const d = schedAddDays(from, i);
+    const s = el("span", "s-day" + (i % 7 >= 5 ? " we" : "") + (d === today ? " today" : ""));
+    s.textContent = String(+d.slice(8));
+    hDay.cells.appendChild(s);
+  }
+  hMonth.name.textContent = "案件 / 工程 / 作業";
+  head.appendChild(hMonth.row); head.appendChild(hWeek.row); head.appendChild(hDay.row);
+  grid.appendChild(head);
+
+  /* 本体 */
+  const groups = schedTree();
+
+  const putBar = (cells, node, links) => {
+    const it = node.item, p = node.period;
+    if (!p.start) return;
+    const s = schedDiff(from, p.start), e = schedDiff(from, p.end);
+    if (e < 0 || s >= days) return;
+    const cs = Math.max(0, s), ce = Math.min(days - 1, e);
+    const b = el("div", "s-bar-" + it.kind);
+    if (it.kind === "milestone") {
+      b.style.left = s * SCHED_DAY_W + "px";
+      b.textContent = "◆";
+      b.title = (it.title || "") + "（" + p.start + "）";
+      cells.appendChild(b);
+      return;
+    }
+    b.style.left = cs * SCHED_DAY_W + "px";
+    b.style.width = (ce - cs + 1) * SCHED_DAY_W + "px";
+    b.title = (it.title || "") + "（" + p.start + " – " + p.end + (p.auto ? "・子の期間から自動" : "") + "）";
+    if (it.kind === "task") {
+      const t = el("span", "s-bt"); t.textContent = it.title || ""; b.appendChild(t);
+    }
+    if (e <= days - 1 && schedIsOverrun(p, links)) {
+      const o = el("i", "s-over");
+      o.title = "終了日を過ぎても目標が持ち越し中です";
+      b.appendChild(o);
+    }
+    cells.appendChild(b);
+  };
+  const putMarks = (cells, links) => {
+    const byWeek = new Map();
+    for (const l of links) {
+      const mon = schedWeekMonday(l.weekId);
+      if (!mon) continue;
+      const idx = schedDiff(from, mon);
+      if (idx + 7 <= 0 || idx >= days) continue;
+      if (!byWeek.has(idx)) byWeek.set(idx, []);
+      byWeek.get(idx).push(l);
+    }
+    byWeek.forEach((arr, idx) => {
+      const band = el("div", "s-wk");
+      band.style.left = idx * SCHED_DAY_W + "px";
+      band.style.width = weekW + "px";
+      for (const l of arr) {
+        const m = el("span", "s-mark " + l.status);
+        m.textContent = l.status === "achieved" ? "✓" : l.status === "carried" ? "↻" : "●";
+        m.title = schedLinkTitle(l);
+        band.appendChild(m);
+      }
+      cells.appendChild(band);
+    });
+  };
+  const wireCells = (cells, item) => {
+    if (ro) return;
+    cells.classList.add("clickable");
+    cells.onclick = guard("スケジュール", (e) => {
+      const day = Math.floor((e.clientX - cells.getBoundingClientRect().left) / SCHED_DAY_W);
+      if (day < 0 || day >= days) return;
+      schedShowMenu(e, item, schedAddDays(from, day));
+    });
+  };
+  const addBtn = (name, title, fn) => {
+    if (ro) return;
+    const b = el("button", "s-add"); b.type = "button"; b.textContent = "＋"; b.title = title;
+    b.onclick = guard("スケジュール追加", (e) => { e.stopPropagation(); fn(); });
+    name.appendChild(b);
+  };
+  const editable = (t, item) => {
+    if (ro) return;
+    t.classList.add("editable");
+    t.onclick = guard("スケジュール編集", () => openSchedDrawer(item));
+  };
+  const itemRow = (node, level) => {
+    const it = node.item;
+    const r = mkRow(it.kind === "phase" ? "s-phase-row" : "");
+    const links = schedLinksFor([it.id].concat(node.kids.map((k) => k.item.id)));
+    r.name.style.paddingLeft = 8 + level * 16 + "px";
+    if (it.kind === "phase") {
+      const open = !schedCollapsed.has(it.id);
+      const tg = el("button", "s-tg"); tg.type = "button"; tg.textContent = open ? "▾" : "▸";
+      tg.title = open ? "たたむ" : "ひらく";
+      tg.onclick = guard("工程の開閉", (e) => {
+        e.stopPropagation();
+        if (schedCollapsed.has(it.id)) schedCollapsed.delete(it.id); else schedCollapsed.add(it.id);
+        schedSaveCollapsed(); render();
+      });
+      r.name.appendChild(tg);
+      const t = el("span", "s-title strong");
+      t.textContent = it.title || "（無題）"; t.title = t.textContent;
+      editable(t, it);
+      r.name.appendChild(t);
+      const cnt = el("span", "s-cnt"); cnt.textContent = String(node.kids.length); r.name.appendChild(cnt);
+      addBtn(r.name, "この工程に作業を追加", () => openSchedDrawer(null, { kind: "task", projectId: it.projectId || null, parentId: it.id, start: node.period.start }));
+    } else {
+      const t = el("span", "s-title");
+      t.textContent = (it.kind === "milestone" ? "◆ " : "") + (it.title || "（無題）"); t.title = t.textContent;
+      editable(t, it);
+      r.name.appendChild(t);
+      const asg = asArray(it.assignees).map(memberById).filter(Boolean);
+      if (asg.length) {
+        const w = el("span", "s-asg");
+        for (const m of asg.slice(0, 3)) w.appendChild(avatar(m));
+        r.name.appendChild(w);
+      }
+    }
+    putMarks(r.cells, links);
+    putBar(r.cells, node, links);
+    addToday(r.cells);
+    wireCells(r.cells, it);
+    return r.row;
+  };
+
+  for (const g of groups) {
+    const r = mkRow("s-proj-row");
+    const nm = el("span", "s-title strong");
+    nm.textContent = g.project ? g.project.name + (isActive(g.project) ? "" : "（休止中）") : "案件なし";
+    r.name.appendChild(nm);
+    if (g.project) addBtn(r.name, "この案件に工程を追加", () => openSchedDrawer(null, { kind: "phase", projectId: g.project.id }));
+    addToday(r.cells);
+    grid.appendChild(r.row);
+    for (const n of g.top) {
+      grid.appendChild(itemRow(n, 1));
+      if (n.item.kind === "phase" && !schedCollapsed.has(n.item.id)) {
+        for (const k of n.kids) grid.appendChild(itemRow(k, 2));
+      }
+    }
+  }
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+/* 日クリックのメニュー */
+function schedCloseMenu() {
+  if (schedMenuEl) { schedMenuEl.remove(); schedMenuEl = null; }
+}
+function schedShowMenu(ev, item, dateISO) {
+  schedCloseMenu();
+  const weekId = schedWeekIdOf(dateISO);
+  const m = el("div", "s-menu");
+  const b1 = el("button"); b1.type = "button"; b1.textContent = shortWeek(weekId) + " の目標にする";
+  b1.onclick = guard("目標にする", () => { schedCloseMenu(); schedMakeGoal(item, weekId); });
+  const b2 = el("button"); b2.type = "button"; b2.textContent = "編集";
+  b2.onclick = guard("スケジュール編集", () => { schedCloseMenu(); openSchedDrawer(item); });
+  m.appendChild(b1); m.appendChild(b2);
+  m.style.left = Math.max(4, Math.min(ev.clientX, window.innerWidth - 170)) + "px";
+  m.style.top = Math.max(4, Math.min(ev.clientY + 4, window.innerHeight - 80)) + "px";
+  document.body.appendChild(m);
+  schedMenuEl = m;
+}
+document.addEventListener("mousedown", (e) => {
+  if (schedMenuEl && !schedMenuEl.contains(e.target)) schedCloseMenu();
+}, true);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") schedCloseMenu(); });
+window.addEventListener("resize", schedCloseMenu);
+document.addEventListener("scroll", schedCloseMenu, true);
+
+/* 週の目標への落とし込み */
+function schedMakeGoal(item, weekId) {
+  if (state.readOnly) { toast("共有フォルダに書き込めないため、閲覧のみです"); return; }
+  const closed = asArray(state.weeks).some((w) => w.id === weekId && w.closed) || (state.week.id === weekId && state.week.closed);
+  if (closed) { toast(shortWeek(weekId) + " は締め済みのため、目標を作れません"); return; }
+  const parent = item.parentId ? schedById(item.parentId) : null;
+  const def = parent && item.kind === "task" ? (parent.title || "") + "：" + (item.title || "") : (item.title || "");
+  const title = prompt(shortWeek(weekId) + " の目標にします。目標名を確認してください。", def);
+  if (title === null) return;
+  const t = title.trim();
+  if (!t) { toast("目標名を入力してください"); return; }
+  if (!bridge) { toast("プレビューでは保存されません"); return; }
+  send({ type: "createGoal", weekId: weekId, title: t, scheduleId: item.id, viewWeekId: state.week.id });
+  schedRequestLinks();
+}
+
+/* 予定の編集ドロワー */
+function wireScheduleDrawer() {
+  document.getElementById("sdClose").onclick = closeSchedDrawer;
+  document.getElementById("sdCancel").onclick = closeSchedDrawer;
+  document.getElementById("sdSave").onclick = guard("予定の保存", saveSchedDrawer);
+  document.getElementById("sdDelete").onclick = guard("予定の削除", deleteSchedDrawer);
+  document.getElementById("sdKind").onchange = () => refreshSchedForm();
+  document.getElementById("sdProject").onchange = () => refreshSchedForm();
+}
+
+function openSchedDrawer(item, preset) {
+  if (state.readOnly) { toast("共有フォルダに書き込めないため、閲覧のみです"); return; }
+  schedEditingId = item ? item.id : null;
+  const p = preset || {};
+  const t = item || {
+    kind: p.kind || "task", projectId: p.projectId || null, parentId: p.parentId || null,
+    title: "", start: p.start || schedToday(), end: p.start || schedToday(), assignees: [], history: [],
+  };
+  const hasKids = !!item && item.kind === "phase" && schedKids(item.id).length > 0;
+  document.getElementById("sdTitleH").textContent = item ? "予定を編集" : "予定を追加";
+  document.getElementById("sdSave").textContent = item ? "保存" : "作成";
+  document.getElementById("sdDelete").hidden = !item;
+  fillSelect("sdKind", SCHED_KINDS, t.kind);
+  document.getElementById("sdKind").disabled = hasKids;   // 子を持つ工程は種類を変えられない
+  document.getElementById("sdTitle").value = t.title || "";
+
+  const projOpts = [{ value: "", label: "（案件なし）" }];
+  for (const pr of asArray(state.board.projects)) {
+    if (!isActive(pr) && pr.id !== t.projectId) continue;
+    projOpts.push({ value: pr.id, label: pr.name + (isActive(pr) ? "" : "（休止中）") });
+  }
+  fillSelect("sdProject", projOpts, t.projectId || "");
+  document.getElementById("sdParent").replaceChildren();
+  document.getElementById("sdParent").dataset.want = t.parentId || "";
+  document.getElementById("sdStart").value = t.start || "";
+  document.getElementById("sdEnd").value = t.end || t.start || "";
+
+  const picker = document.getElementById("sdAssignees");
+  const selected = new Set(asArray(t.assignees));
+  const pickable = asArray(state.board.members).filter((m) => isActive(m) || selected.has(m.id));
+  picker.replaceChildren(...pickable.map((m) => {
+    const b = el("button", "pick" + (selected.has(m.id) ? " on" : ""));
+    b.type = "button"; b.dataset.memberId = m.id;
+    b.appendChild(avatar(m)); b.appendChild(document.createTextNode(m.name));
+    b.onclick = () => b.classList.toggle("on");
+    return b;
+  }));
+
+  const hist = asArray(t.history);
+  document.getElementById("sdHistWrap").hidden = hist.length === 0;
+  document.getElementById("sdHistory").textContent = hist.join("\n");
+
+  refreshSchedForm();
+  document.getElementById("scrim").hidden = false;
+  document.getElementById("schedDrawer").hidden = false;
+  document.getElementById("sdTitle").focus();
+}
+
+// 種類・案件に応じて、親工程の選択肢と日付欄の状態を整える
+function refreshSchedForm() {
+  const kind = document.getElementById("sdKind").value;
+  const projectId = document.getElementById("sdProject").value || null;
+  const parentSel = document.getElementById("sdParent");
+  const want = parentSel.value || parentSel.dataset.want || "";
+  const opts = [{ value: "", label: "なし（案件の直下）" }];
+  for (const ph of schedItems().filter((i) => i.kind === "phase" && i.id !== schedEditingId && (i.projectId || null) === projectId)) {
+    opts.push({ value: ph.id, label: ph.title || "（無題）" });
+  }
+  fillSelect("sdParent", opts, opts.some((o) => o.value === want) ? want : "");
+  parentSel.dataset.want = "";
+  document.getElementById("sdParentWrap").hidden = kind === "phase";
+  document.getElementById("sdEndWrap").hidden = kind === "milestone";
+  document.getElementById("sdStartK").textContent = kind === "milestone" ? "日付" : "開始日";
+
+  const item = schedEditingId ? schedById(schedEditingId) : null;
+  const auto = !!item && item.kind === "phase" && kind === "phase" && schedKids(item.id).length > 0;
+  const sEl = document.getElementById("sdStart"), eEl = document.getElementById("sdEnd");
+  if (auto) {
+    const per = schedPeriodOf(item);
+    sEl.value = per.start; eEl.value = per.end;
+  }
+  sEl.disabled = auto; eEl.disabled = auto;
+  document.getElementById("sdAuto").hidden = !auto;
+  document.getElementById("sdAuto").textContent = auto
+    ? "子の期間から自動（作業 " + schedKids(item.id).length + " 件の最小開始日〜最大終了日）" : "";
+}
+
+function closeSchedDrawer() {
+  document.getElementById("scrim").hidden = true;
+  document.getElementById("schedDrawer").hidden = true;
+  schedEditingId = null;
+}
+
+function saveSchedDrawer() {
+  const kind = document.getElementById("sdKind").value;
+  const title = document.getElementById("sdTitle").value.trim();
+  if (!title) { toast("タイトルを入力してください"); document.getElementById("sdTitle").focus(); return; }
+  const item = schedEditingId ? schedById(schedEditingId) : null;
+  const auto = !!item && item.kind === "phase" && schedKids(item.id).length > 0;
+  const start = document.getElementById("sdStart").value;
+  const end = kind === "milestone" ? start : document.getElementById("sdEnd").value;
+  if (!auto) {
+    if (!start || !end) { toast("日付を入力してください"); return; }
+    if (end < start) { toast("終了日は開始日以降にしてください"); return; }
+  }
+  const parentId = kind === "phase" ? null : (document.getElementById("sdParent").value || null);
+  const parent = parentId ? schedById(parentId) : null;
+  const fields = {
+    kind: kind, title: title,
+    projectId: parent ? (parent.projectId || null) : (document.getElementById("sdProject").value || null),
+    parentId: parentId,
+    assignees: Array.from(document.querySelectorAll("#sdAssignees .pick.on")).map((b) => b.dataset.memberId),
+  };
+  if (!auto) { fields.start = start; fields.end = end; }
+  if (!bridge) { toast("プレビューでは保存されません"); closeSchedDrawer(); return; }
+  if (item) send({ type: "updateScheduleItem", itemId: item.id, fields: fields });
+  else send({ type: "createScheduleItem", fields: fields });
+  closeSchedDrawer();
+}
+
+function deleteSchedDrawer() {
+  const item = schedEditingId ? schedById(schedEditingId) : null;
+  if (!item) return;
+  const n = item.kind === "phase" ? schedKids(item.id).length : 0;
+  const msg = "「" + (item.title || "この予定") + "」を削除します。"
+    + (n ? "\n工程の中の作業・マイルストーン " + n + " 件も一緒に削除されます。" : "") + "\nよろしいですか？";
+  if (!confirm(msg)) return;
+  if (!bridge) { toast("プレビューでは削除されません"); closeSchedDrawer(); return; }
+  send({ type: "deleteScheduleItem", itemId: item.id });
+  closeSchedDrawer();
+}
+
 /* ---------------- 小物 ---------------- */
 function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }
 function chip(text, extra) { const c = el("span", "chip" + (extra ? " " + extra : "")); c.textContent = text; return c; }
@@ -1818,5 +2409,12 @@ function buildStandaloneState() {
       { id: "t12", title: "請求データの突合", status: "done", goalId: "gC", continuingGoalId: null, assignees: ["m3"], due: "2026-07-22", priority: "normal", carriedFrom: null },
     ],
   };
-  return { type: "state", board, week, weeks: [{ id: "2026-W30" }], view: "board", today: "2026-07-24", connected: true };
+  const schedule = { items: [
+    { id: "sc-1", kind: "phase", projectId: "p-a", parentId: null, title: "設計工程", start: "2026-07-13", end: "2026-07-31", assignees: [], history: [] },
+    { id: "sc-2", kind: "task", projectId: "p-a", parentId: "sc-1", title: "画面設計", start: "2026-07-13", end: "2026-07-24", assignees: ["m1"], history: [] },
+    { id: "sc-3", kind: "task", projectId: "p-a", parentId: "sc-1", title: "帳票設計", start: "2026-07-20", end: "2026-08-07", assignees: ["m2"], history: [] },
+    { id: "sc-4", kind: "milestone", projectId: "p-a", parentId: null, title: "契約更新日", start: "2026-08-14", end: "2026-08-14", assignees: [], history: [] },
+    { id: "sc-5", kind: "task", projectId: "p-b", parentId: null, title: "要件ヒアリング", start: "2026-07-15", end: "2026-07-22", assignees: ["m3"], history: [] },
+  ] };
+  return { type: "state", board, week, weeks: [{ id: "2026-W30" }], schedule, view: "board", today: "2026-07-24", connected: true };
 }

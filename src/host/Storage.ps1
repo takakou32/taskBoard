@@ -318,8 +318,10 @@ function Remove-Task {
 
 # ---- 目標の操作 ------------------------------------------------------------
 function Add-Goal {
-    param([string]$Root, [string]$WeekId, [string]$Title, [string]$Actor = 'unknown')
+    param([string]$Root, [string]$WeekId, [string]$Title, [string]$Actor = 'unknown', [string]$ScheduleId = '')
     if ([string]::IsNullOrWhiteSpace($Title)) { throw "目標のタイトルを入力してください。" }
+    # 週ファイルが無ければ作る（スケジュール画面から未来の週へ目標を作る場合）
+    Get-OrCreateWeek $Root $WeekId | Out-Null
     Invoke-WithLock -Root $Root -LockName $WeekId -Action {
         $path = Get-WeekPath $Root $WeekId
         $week = Read-JsonFile $path
@@ -332,6 +334,7 @@ function Add-Goal {
         $goal = [ordered]@{
             id = New-Id 'g'; key = $key; title = $Title.Trim(); status = 'running'
             carriedFrom = $null; carryStreak = 0
+            scheduleId = $(if ([string]::IsNullOrWhiteSpace($ScheduleId)) { $null } else { $ScheduleId })
         }
         $week.goals = @($week.goals) + $goal
         Write-JsonFile $path $week
@@ -357,6 +360,11 @@ function Update-Goal {
             $s = [string]$Fields.status
             if ($s -notin @('running','achieved','carried')) { throw "不正な目標ステータス: $s" }
             $goal.status = $s
+        }
+        if (Test-HasField $Fields 'scheduleId') {
+            $sid = if ([string]::IsNullOrWhiteSpace([string]$Fields.scheduleId)) { $null } else { [string]$Fields.scheduleId }
+            if (Test-HasField $goal 'scheduleId') { $goal.scheduleId = $sid }
+            else { $goal | Add-Member -NotePropertyName scheduleId -NotePropertyValue $sid -Force }
         }
         Write-JsonFile $path $week
     }
@@ -773,6 +781,185 @@ function Set-TaskOrder {
     }
 }
 
+# ---- スケジュール（schedule.json・週に属さない） ---------------------------
+# 案件 → 工程(phase) → 作業(task)/マイルストーン(milestone) の3段。
+# 週ファイルとは独立して編集でき、週の締めとは無関係。
+function Get-SchedulePath { param($Root) [System.IO.Path]::Combine($Root, 'schedule.json') }
+
+# 戻り値は @{ schemaVersion; items = 配列 }。ファイルが無ければ items は空。
+function Get-Schedule {
+    param([string]$Root)
+    $s = Read-JsonFile (Get-SchedulePath $Root)
+    if (-not $s) { $s = [pscustomobject]@{ schemaVersion = 1; items = @() } }
+    if (-not (Test-HasField $s 'items') -or $null -eq $s.items) {
+        $s | Add-Member -NotePropertyName items -NotePropertyValue @() -Force
+    }
+    $s.items = @($s.items)
+    return $s
+}
+
+# 他PCの更新検知用
+function Get-ScheduleStamp {
+    param([string]$Root)
+    $path = Get-SchedulePath $Root
+    if (-not (Test-Path -LiteralPath $path)) { return '' }
+    return (Get-Item -LiteralPath $path).LastWriteTimeUtc.ToString('o')
+}
+
+function ConvertTo-ScheduleDate {
+    param($Value, [string]$Label)
+    $s = [string]$Value
+    $d = [datetime]::MinValue
+    if ($s -notmatch '^\d{4}-\d{2}-\d{2}$' -or
+        -not [datetime]::TryParseExact($s, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture,
+                                       [System.Globalization.DateTimeStyles]::None, [ref]$d)) {
+        throw "${Label}は yyyy-MM-dd 形式の日付で指定してください: $s"
+    }
+    return $s
+}
+
+function ConvertTo-StringArray {
+    param($Value)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($v in @($Value)) {
+        if ($null -eq $v) { continue }
+        $t = [string]$v
+        if ([string]::IsNullOrWhiteSpace($t)) { continue }
+        if ($out -notcontains $t) { [void]$out.Add($t) }
+    }
+    return ,@($out.ToArray())
+}
+
+# 項目を検証して保存用の値に確定する（$Vals は kind/projectId/parentId/title/start/end/assignees を持つ辞書）。
+# $Items は全項目、$SelfId は更新時の自分のID。子があるかは $Items から判定する。
+function Test-ScheduleValues {
+    param($Vals, $Items, [string]$SelfId)
+    if ($Vals.kind -notin @('phase','task','milestone')) { throw "不正な種類です: $($Vals.kind)" }
+    if ([string]::IsNullOrWhiteSpace([string]$Vals.title)) { throw "タイトルを入力してください。" }
+    $Vals.title = ([string]$Vals.title).Trim()
+    $Vals.start = ConvertTo-ScheduleDate $Vals.start '開始日'
+    if ($Vals.kind -eq 'milestone') { $Vals.end = $Vals.start }
+    $Vals.end = ConvertTo-ScheduleDate $Vals.end '終了日'
+    if ([datetime]::ParseExact($Vals.start, 'yyyy-MM-dd', $null) -gt [datetime]::ParseExact($Vals.end, 'yyyy-MM-dd', $null)) {
+        throw "開始日が終了日より後になっています。"
+    }
+    $Vals.assignees = ConvertTo-StringArray $Vals.assignees
+    if ([string]::IsNullOrWhiteSpace([string]$Vals.projectId)) { $Vals.projectId = $null } else { $Vals.projectId = [string]$Vals.projectId }
+    if ([string]::IsNullOrWhiteSpace([string]$Vals.parentId))  { $Vals.parentId  = $null } else { $Vals.parentId  = [string]$Vals.parentId }
+
+    if ($Vals.kind -eq 'phase') {
+        if ($Vals.parentId) { throw "工程の下に工程は置けません。" }
+    } elseif ($Vals.parentId) {
+        if ($Vals.parentId -eq $SelfId) { throw "自分自身を親にはできません。" }
+        $parent = $Items | Where-Object { $_.id -eq $Vals.parentId } | Select-Object -First 1
+        if (-not $parent) { throw "親の工程が見つかりません: $($Vals.parentId)" }
+        if ($parent.kind -ne 'phase') { throw "親にできるのは工程だけです。" }
+        $Vals.projectId = $parent.projectId   # 子の案件は親にそろえる
+    }
+    if ($SelfId -and $Vals.kind -ne 'phase') {
+        if (@($Items | Where-Object { $_.parentId -eq $SelfId }).Count) {
+            throw "子の項目がある工程は、作業やマイルストーンに変更できません。"
+        }
+    }
+}
+
+function Add-ScheduleItem {
+    param([string]$Root, $Fields, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -LockName 'schedule' -Action {
+        $sched = Get-Schedule $Root
+        $vals = @{
+            kind      = [string](Get-FieldOrDefault $Fields 'kind' 'task')
+            projectId = Get-FieldOrDefault $Fields 'projectId' $null
+            parentId  = Get-FieldOrDefault $Fields 'parentId' $null
+            title     = Get-FieldOrDefault $Fields 'title' ''
+            start     = Get-FieldOrDefault $Fields 'start' ''
+            end       = Get-FieldOrDefault $Fields 'end' ''
+            assignees = Get-FieldOrDefault $Fields 'assignees' @()
+        }
+        if ($vals.kind -eq 'milestone' -and -not $vals.end) { $vals.end = $vals.start }
+        Test-ScheduleValues -Vals $vals -Items $sched.items -SelfId ''
+        $item = [ordered]@{
+            id = New-Id 'sc'; kind = $vals.kind; projectId = $vals.projectId; parentId = $vals.parentId
+            title = $vals.title; start = $vals.start; end = $vals.end
+            assignees = $vals.assignees; history = @()
+        }
+        Add-ItemHistory -Item $item -Text ("{0}: 作成" -f $Actor)
+        $sched.items = @($sched.items) + $item
+        Write-JsonFile (Get-SchedulePath $Root) ([ordered]@{ schemaVersion = 1; items = @($sched.items) })
+        return $item.id
+    }
+}
+
+function Update-ScheduleItem {
+    param([string]$Root, [string]$ItemId, $Fields, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -LockName 'schedule' -Action {
+        $sched = Get-Schedule $Root
+        $item = $sched.items | Where-Object { $_.id -eq $ItemId } | Select-Object -First 1
+        if (-not $item) { throw "スケジュール項目が見つかりません: $ItemId" }
+        $oldProject = $item.projectId
+        $vals = @{}
+        foreach ($k in @('kind','projectId','parentId','title','start','end','assignees')) {
+            $vals[$k] = if (Test-HasField $Fields $k) { $Fields.$k } else { Get-FieldOrDefault $item $k $null }
+        }
+        $vals.kind = [string]$vals.kind
+        # マイルストーンは終了日を開始日にそろえる（開始日だけ変えた場合も追従）
+        if ($vals.kind -eq 'milestone') { $vals.end = $vals.start }
+        Test-ScheduleValues -Vals $vals -Items $sched.items -SelfId $ItemId
+
+        $changed = @()
+        foreach ($k in @('kind','projectId','parentId','title','start','end')) {
+            if ([string](Get-FieldOrDefault $item $k '') -ne [string]$vals[$k]) { $changed += $k }
+        }
+        $oldAs = (@(Get-FieldOrDefault $item 'assignees' @()) -join ',')
+        if ($oldAs -ne (@($vals.assignees) -join ',')) { $changed += 'assignees' }
+
+        foreach ($k in @('kind','projectId','parentId','title','start','end')) { $item.$k = $vals[$k] }
+        $item.assignees = @($vals.assignees)
+
+        # 工程の案件を変えたら子もそろえる
+        if ($item.kind -eq 'phase' -and [string]$oldProject -ne [string]$item.projectId) {
+            foreach ($c in @($sched.items | Where-Object { $_.parentId -eq $ItemId })) { $c.projectId = $item.projectId }
+        }
+        if ($changed.Count) {
+            Add-ItemHistory -Item $item -Text ("{0}: 更新（{1}）" -f $Actor, ($changed -join ', '))
+        }
+        Write-JsonFile (Get-SchedulePath $Root) ([ordered]@{ schemaVersion = 1; items = @($sched.items) })
+    }
+}
+
+# 削除する。工程なら子も消す。戻り値は消した件数（本人を含む）。
+function Remove-ScheduleItem {
+    param([string]$Root, [string]$ItemId, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -LockName 'schedule' -Action {
+        $sched = Get-Schedule $Root
+        $item = $sched.items | Where-Object { $_.id -eq $ItemId } | Select-Object -First 1
+        if (-not $item) { throw "スケジュール項目が見つかりません: $ItemId" }
+        $before = @($sched.items).Count
+        $keep = @($sched.items | Where-Object { $_.id -ne $ItemId -and $_.parentId -ne $ItemId })
+        Write-JsonFile (Get-SchedulePath $Root) ([ordered]@{ schemaVersion = 1; items = @($keep) })
+        return ($before - $keep.Count)
+    }
+}
+
+# 全週を走査し、スケジュール項目に結びついた目標を返す。
+function Get-ScheduleLinks {
+    param([string]$Root)
+    $out = @()
+    foreach ($w in (Get-WeekList $Root)) {
+        $week = Get-Week $Root $w.id
+        if (-not $week) { continue }
+        foreach ($g in @($week.goals)) {
+            $sid = Get-FieldOrDefault $g 'scheduleId' $null
+            if ([string]::IsNullOrWhiteSpace([string]$sid)) { continue }
+            $out += [ordered]@{
+                weekId = $w.id; goalId = $g.id; key = $g.key; title = $g.title
+                status = $g.status; scheduleId = [string]$sid
+            }
+        }
+    }
+    return ,@($out)
+}
+
 # ---- 小物 ------------------------------------------------------------------
 function Test-HasField {
     param($Obj, [string]$Name)
@@ -916,6 +1103,7 @@ function Close-Week {
             [void]$nextGoals.Add([ordered]@{
                 id = $newGoalId; key = $g.key; title = $g.title; status = 'running'
                 carriedFrom = $WeekId; carryStreak = $streak
+                scheduleId = (Get-FieldOrDefault $g 'scheduleId' $null)
             })
         }
 
@@ -1208,6 +1396,7 @@ function Backup-DataDaily {
     if (Test-Path -LiteralPath $dest) { return }   # 今日は取得済み
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     Copy-Item -LiteralPath (Get-BoardPath $Root) -Destination $dest -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath (Get-SchedulePath $Root) -Destination $dest -ErrorAction SilentlyContinue
     $wd = Get-WeeksDir $Root
     if (Test-Path -LiteralPath $wd) {
         Copy-Item -Path (Join-Path $wd '*.json') -Destination $dest -ErrorAction SilentlyContinue

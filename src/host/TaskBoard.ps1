@@ -230,10 +230,13 @@ function Send-State {
 
     $script:CurrentWeekId = $WeekId
     $script:LastStamp     = Get-WeekStamp $DataRoot $WeekId
+    $script:LastScheduleStamp = Get-ScheduleStamp $DataRoot
+    $schedule = Get-Schedule $DataRoot
 
     Send-ToUi @{
         type       = 'state'
         board      = $board
+        schedule   = @{ items = @($schedule.items) }
         week       = $week
         weeks      = $weeks
         view       = 'board'
@@ -252,6 +255,7 @@ function Send-Error { param([string]$Text) Send-ToUi @{ type = 'error'; message 
 # ---- JS からのメッセージ処理 ----------------------------------------------
 $script:CurrentWeekId  = $null
 $script:LastStamp      = ''
+$script:LastScheduleStamp = ''
 $script:HeldLockTaskId = $null
 
 # メモ内のリンクを外部アプリで開く。
@@ -354,8 +358,10 @@ function Invoke-UiMessage {
                 Send-ToUi @{ type = 'retro'; weeks = $retro }
             }
             'createGoal' {
-                Add-Goal -Root $DataRoot -WeekId $msg.weekId -Title $msg.title -Actor $Actor | Out-Null
-                Send-State $msg.weekId
+                $sid = if (Test-HasField $msg 'scheduleId') { [string]$msg.scheduleId } else { '' }
+                Add-Goal -Root $DataRoot -WeekId $msg.weekId -Title $msg.title -Actor $Actor -ScheduleId $sid | Out-Null
+                $view = if ((Test-HasField $msg 'viewWeekId') -and $msg.viewWeekId) { [string]$msg.viewWeekId } else { $msg.weekId }
+                Send-State $view
                 Send-Toast "目標を追加しました"
             }
             'updateGoal' {
@@ -367,6 +373,25 @@ function Invoke-UiMessage {
                 $n = Remove-Goal -Root $DataRoot -WeekId $msg.weekId -GoalId $msg.goalId -Actor $Actor
                 Send-State $msg.weekId
                 Send-Toast $(if ($n) { "目標を削除しました（タスク $n 件の紐づけを解除）" } else { "目標を削除しました" })
+            }
+            'createScheduleItem' {
+                Add-ScheduleItem -Root $DataRoot -Fields $msg.fields -Actor $Actor | Out-Null
+                Send-State $script:CurrentWeekId
+                Send-Toast "スケジュールを追加しました"
+            }
+            'updateScheduleItem' {
+                Update-ScheduleItem -Root $DataRoot -ItemId $msg.itemId -Fields $msg.fields -Actor $Actor
+                Send-State $script:CurrentWeekId
+                Send-Toast "スケジュールを保存しました"
+            }
+            'deleteScheduleItem' {
+                $n = Remove-ScheduleItem -Root $DataRoot -ItemId $msg.itemId -Actor $Actor
+                Send-State $script:CurrentWeekId
+                Send-Toast $(if ($n -gt 1) { "スケジュールを削除しました（子の項目 $($n - 1) 件も削除）" } else { "スケジュールを削除しました" })
+            }
+            'getScheduleLinks' {
+                $links = Get-ScheduleLinks -Root $DataRoot
+                Send-ToUi @{ type = 'scheduleLinks'; links = @($links) }
             }
             'createContinuingGoal' {
                 Add-ContinuingGoal -Root $DataRoot -Title $msg.title -Actor $Actor | Out-Null
@@ -548,7 +573,8 @@ function Start-App {
                 return
             }
             $stamp = Get-WeekStamp $DataRoot $script:CurrentWeekId
-            if ($stamp -ne $script:LastStamp) {
+            $sstamp = Get-ScheduleStamp $DataRoot
+            if ($stamp -ne $script:LastStamp -or $sstamp -ne $script:LastScheduleStamp) {
                 Send-State $script:CurrentWeekId      # 他PCの更新を取り込む
             } else {
                 Send-ToUi @{
