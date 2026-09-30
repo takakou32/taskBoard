@@ -927,6 +927,44 @@ function Update-ScheduleItem {
     }
 }
 
+# 期間だけを複数項目まとめて動かす（ドラッグ移動用）。$Moves は @{ itemId; start; end } の並び。
+# 1件でも検証に落ちたら何も保存しない（途中まで動いた状態を残さないため、先に全件検証してから反映する）。
+function Move-ScheduleItems {
+    param([string]$Root, $Moves, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -LockName 'schedule' -Action {
+        $sched = Get-Schedule $Root
+        $plan = @()
+        $seen = @{}
+        foreach ($m in @($Moves)) {
+            $id = [string](Get-FieldOrDefault $m 'itemId' '')
+            $item = $sched.items | Where-Object { $_.id -eq $id } | Select-Object -First 1
+            if (-not $item) { throw "スケジュール項目が見つかりません: $id" }
+            if ($seen.ContainsKey($id)) { throw "同じ項目が複数指定されています: $id" }
+            $seen[$id] = $true
+            $vals = @{}
+            foreach ($k in @('kind','projectId','parentId','title','start','end','assignees')) {
+                $vals[$k] = Get-FieldOrDefault $item $k $null
+            }
+            $vals.kind = [string]$vals.kind
+            $vals.start = Get-FieldOrDefault $m 'start' ''
+            $vals.end = Get-FieldOrDefault $m 'end' ''
+            if ($vals.kind -eq 'milestone') { $vals.end = $vals.start }
+            Test-ScheduleValues -Vals $vals -Items $sched.items -SelfId $id
+            $plan += ,@($item, $vals)
+        }
+        if (-not $plan.Count) { return 0 }
+        foreach ($p in $plan) {
+            $item = $p[0]; $vals = $p[1]
+            if ([string]$item.start -ne $vals.start -or [string]$item.end -ne $vals.end) {
+                $item.start = $vals.start; $item.end = $vals.end
+                Add-ItemHistory -Item $item -Text ("{0}: 移動（{1} 〜 {2}）" -f $Actor, $vals.start, $vals.end)
+            }
+        }
+        Write-JsonFile (Get-SchedulePath $Root) ([ordered]@{ schemaVersion = 1; items = @($sched.items) })
+        return $plan.Count
+    }
+}
+
 # 削除する。工程なら子も消す。戻り値は消した件数（本人を含む）。
 function Remove-ScheduleItem {
     param([string]$Root, [string]$ItemId, [string]$Actor = 'unknown')

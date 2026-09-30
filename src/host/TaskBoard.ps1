@@ -384,6 +384,11 @@ function Invoke-UiMessage {
                 Send-State $script:CurrentWeekId
                 Send-Toast "スケジュールを保存しました"
             }
+            'moveScheduleItems' {
+                Move-ScheduleItems -Root $DataRoot -Moves @($msg.moves) -Actor $Actor | Out-Null
+                Send-State $script:CurrentWeekId
+                Send-Toast "スケジュールを移動しました"
+            }
             'deleteScheduleItem' {
                 $n = Remove-ScheduleItem -Root $DataRoot -ItemId $msg.itemId -Actor $Actor
                 Send-State $script:CurrentWeekId

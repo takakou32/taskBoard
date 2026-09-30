@@ -50,8 +50,14 @@ if (bridge) {
 
 function handleHostMessage(msg) {
   if (!msg || !msg.type) return;
+  // スケジュールのバーをドラッグ中は再描画で壊れないよう保留し、終了後にまとめて反映する
+  if (schedDrag && (msg.type === "state" || msg.type === "scheduleLinks" || msg.type === "retro")) {
+    schedDeferred.push(msg);
+    return;
+  }
   switch (msg.type) {
     case "state": {
+      schedOverride = null;   // 保存の応答が来たら仮の位置はやめてホストの値で描く
       // ビューと絞り込みは状態更新をまたいで保つ（保存のたびに看板へ戻らないように）
       const view = state ? state.view : "board";
       const retro = state ? state.retro : null;
@@ -90,6 +96,8 @@ function handleHostMessage(msg) {
       break;
     case "error":
       toast("⚠ " + msg.message);
+      // 保存に失敗したら仮の位置を捨てて元に戻す（成功時と違い state が来ないため）
+      if (schedOverride) { schedOverride = null; if (state && state.view === "schedule") render(); }
       break;
   }
 }
@@ -1851,7 +1859,13 @@ function schedToday() { return state.today || todayISO(); }
 function schedDefaultStart() { return schedAddDays(schedMonday(schedToday()), -14); }
 
 /* データ */
-function schedItems() { return asArray(state && state.schedule && state.schedule.items); }
+// ドラッグ直後、保存の応答が来るまでの仮の期間（id → {start,end}）。null なら使わない。
+let schedOverride = null;
+function schedItems() {
+  const items = asArray(state && state.schedule && state.schedule.items);
+  if (!schedOverride) return items;
+  return items.map((i) => schedOverride.has(i.id) ? Object.assign({}, i, schedOverride.get(i.id)) : i);
+}
 function schedById(id) { return schedItems().find((i) => i.id === id) || null; }
 function schedCmp(a, b) {
   const pa = a.period, pb = b.period;
@@ -1937,6 +1951,8 @@ function renderScheduleView() {
   const weekW = SCHED_DAY_W * 7;
   const today = schedToday();
   const gridW = 260 + days * SCHED_DAY_W;
+  schedBarEls = new Map();
+  schedView = { from: from, days: days };
 
   const wrap = el("div", "sched-wrap");
   const bar = el("div", "sched-bar");
@@ -2035,6 +2051,8 @@ function renderScheduleView() {
     if (e < 0 || s >= days) return;
     const cs = Math.max(0, s), ce = Math.min(days - 1, e);
     const b = el("div", "s-bar-" + it.kind);
+    schedBarEls.set(it.id, b);
+    if (!ro) schedWireBar(b, it, s, e);
     if (it.kind === "milestone") {
       b.style.left = s * SCHED_DAY_W + "px";
       b.textContent = "◆";
@@ -2082,6 +2100,7 @@ function renderScheduleView() {
     if (ro) return;
     cells.classList.add("clickable");
     cells.onclick = guard("スケジュール", (e) => {
+      if (schedDrag) return;
       const day = Math.floor((e.clientX - cells.getBoundingClientRect().left) / SCHED_DAY_W);
       if (day < 0 || day >= days) return;
       schedShowMenu(e, item, schedAddDays(from, day));
@@ -2182,6 +2201,196 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") schedCloseMenu(); });
 window.addEventListener("resize", schedCloseMenu);
 document.addEventListener("scroll", schedCloseMenu, true);
+
+/* バーのドラッグ移動・伸縮
+   本体=期間を保って移動、左右の端=開始日／終了日だけ変更、◆=日付を移動。1日単位でスナップ。
+   工程の本体を Shift 付きで動かすと子（作業・マイルストーン）も同じ日数だけ動かす。 */
+const SCHED_EDGE_PX = 6;    // 端とみなす幅
+const SCHED_DRAG_MIN = 4;   // これ未満の動きはクリック扱い
+let schedDrag = null;       // ドラッグ中の状態。null = していない
+let schedDeferred = [];     // ドラッグ中に届いて保留したホストのメッセージ
+let schedBarEls = new Map();  // id → バーの要素（描画のたびに作り直す）
+let schedView = { from: null, days: 0 };
+let schedTipEl = null;
+let schedSuppressClick = false;
+
+// ドラッグ直後のクリックでメニューが出ないよう、次の1回だけ握りつぶす（pointerdown で解除）
+document.addEventListener("click", (e) => {
+  if (!schedSuppressClick) return;
+  schedSuppressClick = false;
+  e.stopPropagation(); e.preventDefault();
+}, true);
+document.addEventListener("pointerdown", () => { schedSuppressClick = false; }, true);
+
+function schedEdgeMode(b, it, clientX) {
+  if (it.kind === "milestone") return "move";
+  const r = b.getBoundingClientRect();
+  const x = clientX - r.left;
+  // 表示範囲の外にはみ出している側は本当の端が見えないので、伸縮の対象にしない
+  if (x < SCHED_EDGE_PX && schedDiff(schedView.from, it.start) >= 0) return "l";
+  if (x > r.width - SCHED_EDGE_PX && schedDiff(schedView.from, it.end) <= schedView.days - 1) return "r";
+  return "move";
+}
+
+function schedWireBar(b, it) {
+  b.classList.add("s-drag");
+  b.onpointermove = (e) => {
+    if (schedDrag) return;
+    b.style.cursor = schedEdgeMode(b, it, e.clientX) === "move" ? "" : "ew-resize";
+  };
+  b.onpointerdown = guard("バーのドラッグ", (e) => {
+    if (e.button !== 0 || schedDrag) return;
+    schedDrag = {
+      id: it.id, kind: it.kind, mode: schedEdgeMode(b, it, e.clientX),
+      start: it.start, end: it.end, x0: e.clientX, x: e.clientX, y: e.clientY,
+      shift: e.shiftKey, pid: e.pointerId, bar: b, moved: false, res: null, withKids: false,
+      kids: it.kind === "phase" ? schedKids(it.id).map((k) => ({ id: k.id, kind: k.kind, start: k.start, end: k.end })) : [],
+    };
+    try { b.setPointerCapture(e.pointerId); } catch (err) { /* 取れなくても動く */ }
+    document.addEventListener("pointermove", schedDragMove);
+    document.addEventListener("pointerup", schedDragEnd);
+    document.addEventListener("pointercancel", schedDragAbort);
+    document.addEventListener("keydown", schedDragKey, true);
+    document.addEventListener("keyup", schedDragKey, true);
+  });
+}
+
+function schedDragRange(dr, d) {
+  if (dr.mode === "l") {
+    const s = schedAddDays(dr.start, d);
+    return { start: s > dr.end ? dr.end : s, end: dr.end };
+  }
+  if (dr.mode === "r") {
+    const e = schedAddDays(dr.end, d);
+    return { start: dr.start, end: e < dr.start ? dr.start : e };
+  }
+  return { start: schedAddDays(dr.start, d), end: schedAddDays(dr.end, d) };
+}
+
+function schedPlaceBar(b, kind, start, end) {
+  const from = schedView.from, days = schedView.days;
+  const s = schedDiff(from, start), e = schedDiff(from, end);
+  if (e < 0 || s >= days) { b.style.display = "none"; return; }
+  b.style.display = "";
+  if (kind === "milestone") { b.style.left = s * SCHED_DAY_W + "px"; return; }
+  const cs = Math.max(0, s), ce = Math.min(days - 1, e);
+  b.style.left = cs * SCHED_DAY_W + "px";
+  b.style.width = (ce - cs + 1) * SCHED_DAY_W + "px";
+}
+
+function schedDragUpdate() {
+  const dr = schedDrag;
+  if (!dr || !dr.moved) return;
+  const d = Math.round((dr.x - dr.x0) / SCHED_DAY_W);
+  dr.res = schedDragRange(dr, d);
+  dr.withKids = dr.kind === "phase" && dr.mode === "move" && dr.shift;
+  schedPlaceBar(dr.bar, dr.kind, dr.res.start, dr.res.end);
+  const shiftDays = schedDiff(dr.start, dr.res.start);
+  for (const k of dr.kids) {
+    const kb = schedBarEls.get(k.id);
+    if (!kb) continue;   // 畳まれた工程の子など、描かれていないもの
+    const n = dr.withKids ? shiftDays : 0;
+    schedPlaceBar(kb, k.kind, schedAddDays(k.start, n), schedAddDays(k.end, n));
+  }
+  if (!schedTipEl) { schedTipEl = el("div", "s-dragtip"); document.body.appendChild(schedTipEl); }
+  const f = (iso) => iso.slice(5).replace("-", "/");
+  schedTipEl.textContent = (dr.res.start === dr.res.end ? f(dr.res.start) : f(dr.res.start) + "〜" + f(dr.res.end))
+    + (dr.withKids ? "（子も移動）" : "");
+  schedTipEl.style.left = Math.min(dr.x + 14, window.innerWidth - 170) + "px";
+  schedTipEl.style.top = Math.max(4, dr.y - 30) + "px";
+}
+
+function schedDragMove(e) {
+  const dr = schedDrag;
+  if (!dr || e.pointerId !== dr.pid) return;
+  dr.x = e.clientX; dr.y = e.clientY; dr.shift = e.shiftKey;
+  if (!dr.moved) {
+    if (Math.abs(dr.x - dr.x0) < SCHED_DRAG_MIN) return;
+    dr.moved = true;
+    schedCloseMenu();
+    document.body.classList.add("s-dragging", dr.mode === "move" ? "s-dg-move" : "s-dg-rs");
+  }
+  schedDragUpdate();
+}
+
+function schedDragCleanup() {
+  document.removeEventListener("pointermove", schedDragMove);
+  document.removeEventListener("pointerup", schedDragEnd);
+  document.removeEventListener("pointercancel", schedDragAbort);
+  document.removeEventListener("keydown", schedDragKey, true);
+  document.removeEventListener("keyup", schedDragKey, true);
+  document.body.classList.remove("s-dragging", "s-dg-move", "s-dg-rs");
+  if (schedTipEl) { schedTipEl.remove(); schedTipEl = null; }
+  if (schedDrag) { try { schedDrag.bar.releasePointerCapture(schedDrag.pid); } catch (err) { /* 既に外れている */ } }
+  schedDrag = null;
+}
+
+function schedFlushDeferred() {
+  const q = schedDeferred;
+  schedDeferred = [];
+  for (const m of q) handleHostMessage(m);
+}
+
+// Esc（と Shift の押し離し）。Esc は他の Esc 処理（ドロワーを閉じる等）に渡さない
+function schedDragKey(e) {
+  const dr = schedDrag;
+  if (!dr) return;
+  if (e.key === "Escape" && e.type === "keydown") {
+    e.stopPropagation(); e.preventDefault();
+    schedDragAbort();
+  } else if (e.key === "Shift" && dr.moved) {
+    dr.shift = e.type === "keydown";
+    schedDragUpdate();
+  }
+}
+
+function schedDragAbort() {
+  const dr = schedDrag;
+  if (!dr) return;
+  schedDragCleanup();
+  if (dr.moved) schedSuppressClick = true;   // 取り消したあとにボタンを離してもメニューを出さない
+  schedFlushDeferred();
+  if (dr.moved) render();   // 仮の位置を元に戻す
+}
+
+function schedDragEnd(e) {
+  const dr = schedDrag;
+  if (!dr || e.pointerId !== dr.pid) return;
+  if (!dr.moved) {
+    // クリック扱い。click より先に再描画して要素を差し替えないよう、保留分は後で反映する
+    schedDragCleanup();
+    setTimeout(schedFlushDeferred, 0);
+    return;
+  }
+  dr.x = e.clientX; dr.y = e.clientY; dr.shift = e.shiftKey;
+  schedDragUpdate();
+  const res = dr.res, withKids = dr.withKids;
+  schedDragCleanup();
+  schedSuppressClick = true;
+  schedFlushDeferred();   // 仮の位置を置く前に反映して、上書きされないようにする
+  guard("バーの移動", () => schedDragCommit(dr, res, withKids))();
+}
+
+function schedDragCommit(dr, res, withKids) {
+  if (res.start === dr.start && res.end === dr.end) { render(); return; }
+  if (!bridge) { toast("プレビューでは保存されません"); render(); return; }
+  const over = new Map();
+  over.set(dr.id, { start: res.start, end: res.end });
+  if (withKids) {
+    const n = schedDiff(dr.start, res.start);
+    const moves = [{ itemId: dr.id, start: res.start, end: res.end }];
+    for (const k of dr.kids) {
+      const s = schedAddDays(k.start, n), e = schedAddDays(k.end, n);
+      moves.push({ itemId: k.id, start: s, end: e });
+      over.set(k.id, { start: s, end: e });
+    }
+    send({ type: "moveScheduleItems", moves: moves });
+  } else {
+    send({ type: "updateScheduleItem", itemId: dr.id, fields: { start: res.start, end: res.end } });
+  }
+  schedOverride = over;
+  render();
+}
 
 /* 週の目標への落とし込み */
 function schedMakeGoal(item, weekId) {

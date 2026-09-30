@@ -495,6 +495,12 @@ body {
 .s-bar-phase::before { left: 0; clip-path: polygon(0 0, 100% 0, 0 100%); }
 .s-bar-phase::after { right: 0; clip-path: polygon(0 0, 100% 0, 100% 100%); }
 .s-bar-milestone { position: absolute; top: 3px; width: var(--dw); text-align: center; color: var(--st-review); font-size: 15px; line-height: 20px; z-index: 1; }
+/* ドラッグできるバー（読み取り専用のときは付かない）。端の ew-resize は JS が切り替える */
+.s-drag { cursor: grab; user-select: none; touch-action: none; }
+body.s-dragging, body.s-dragging * { user-select: none; }
+body.s-dg-move, body.s-dg-move * { cursor: grabbing !important; }
+body.s-dg-rs, body.s-dg-rs * { cursor: ew-resize !important; }
+.s-dragtip { position: fixed; z-index: 70; pointer-events: none; padding: 2px 8px; border-radius: 4px; background: var(--ink); color: var(--paper); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; box-shadow: var(--shadow); }
 .s-over { position: absolute; top: 0; bottom: 0; right: 0; width: 7px; background: var(--danger); }
 .s-spill { position: absolute; top: 8px; height: 10px; border-radius: 2px; background: var(--danger); opacity: .3; border: 1px dashed var(--danger); box-sizing: border-box; z-index: 1; }
 .s-bar-phase .s-over { top: 0; height: 6px; width: 8px; }
