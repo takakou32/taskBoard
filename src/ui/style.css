@@ -496,6 +496,7 @@ body {
 .s-bar-phase::after { right: 0; clip-path: polygon(0 0, 100% 0, 100% 100%); }
 .s-bar-milestone { position: absolute; top: 3px; width: var(--dw); text-align: center; color: var(--st-review); font-size: 15px; line-height: 20px; z-index: 1; }
 .s-over { position: absolute; top: 0; bottom: 0; right: 0; width: 7px; background: var(--danger); }
+.s-spill { position: absolute; top: 8px; height: 10px; border-radius: 2px; background: var(--danger); opacity: .3; border: 1px dashed var(--danger); box-sizing: border-box; z-index: 1; }
 .s-bar-phase .s-over { top: 0; height: 6px; width: 8px; }
 .s-wk { position: absolute; top: 0; bottom: 0; display: flex; justify-content: flex-end; align-items: flex-start; gap: 1px; padding: 0 2px; pointer-events: none; background: rgba(28,95,112,.07); z-index: 0; }
 .s-mark { pointer-events: auto; font-size: 10px; font-weight: 700; line-height: 1; margin-top: 1px; padding: 1px 2px; background: var(--surface); border-radius: 3px; border: 1px solid var(--rule); z-index: 3; }

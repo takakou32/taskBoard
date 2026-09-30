@@ -1860,19 +1860,22 @@ function schedCmp(a, b) {
   return ta < tb ? -1 : ta > tb ? 1 : 0;
 }
 function schedKids(phaseId) { return schedItems().filter((i) => i.kind !== "phase" && i.parentId === phaseId); }
-// 工程は子があれば子の最小start〜最大end、なければ自身
+// 工程も自分で入力した start/end を使う（工程を先に置き、作業はあとから入れる運用のため、子から計算しない）
 function schedPeriodOf(item) {
-  if (item.kind === "phase") {
-    const kids = schedKids(item.id).filter((k) => k.start && k.end);
-    if (kids.length) {
-      return {
-        start: kids.reduce((m, k) => (k.start < m ? k.start : m), kids[0].start),
-        end: kids.reduce((m, k) => (k.end > m ? k.end : m), kids[0].end),
-        auto: true,
-      };
-    }
-  }
-  return { start: item.start, end: item.end || item.start, auto: false };
+  return { start: item.start, end: item.end || item.start };
+}
+// 工程の期間から外れている子の範囲（左・右）。なければ空配列
+function schedSpillOf(item) {
+  if (item.kind !== "phase" || !item.start) return [];
+  const pEnd = item.end || item.start;
+  const kids = schedKids(item.id).filter((k) => k.start && k.end);
+  if (!kids.length) return [];
+  const minS = kids.reduce((m, k) => (k.start < m ? k.start : m), kids[0].start);
+  const maxE = kids.reduce((m, k) => (k.end > m ? k.end : m), kids[0].end);
+  const out = [];
+  if (minS < item.start) out.push({ start: minS, end: schedAddDays(item.start, -1) });
+  if (maxE > pEnd) out.push({ start: schedAddDays(pEnd, 1), end: maxE });
+  return out;
 }
 function schedNode(item) { return { item: item, period: schedPeriodOf(item), kids: [] }; }
 
@@ -2012,6 +2015,19 @@ function renderScheduleView() {
   /* 本体 */
   const groups = schedTree();
 
+  // 工程の期間から作業がはみ出した部分を危険色で示す（警告のみ）
+  const putSpill = (cells, it) => {
+    for (const sp of schedSpillOf(it)) {
+      const s = schedDiff(from, sp.start), e = schedDiff(from, sp.end);
+      if (e < 0 || s >= days) continue;
+      const cs = Math.max(0, s), ce = Math.min(days - 1, e);
+      const b = el("div", "s-spill");
+      b.style.left = cs * SCHED_DAY_W + "px";
+      b.style.width = (ce - cs + 1) * SCHED_DAY_W + "px";
+      b.title = "作業がこの工程の期間外にあります（" + sp.start + " – " + sp.end + "）";
+      cells.appendChild(b);
+    }
+  };
   const putBar = (cells, node, links) => {
     const it = node.item, p = node.period;
     if (!p.start) return;
@@ -2028,7 +2044,7 @@ function renderScheduleView() {
     }
     b.style.left = cs * SCHED_DAY_W + "px";
     b.style.width = (ce - cs + 1) * SCHED_DAY_W + "px";
-    b.title = (it.title || "") + "（" + p.start + " – " + p.end + (p.auto ? "・子の期間から自動" : "") + "）";
+    b.title = (it.title || "") + "（" + p.start + " – " + p.end + "）";
     if (it.kind === "task") {
       const t = el("span", "s-bt"); t.textContent = it.title || ""; b.appendChild(t);
     }
@@ -2116,6 +2132,7 @@ function renderScheduleView() {
       }
     }
     putMarks(r.cells, links);
+    putSpill(r.cells, it);
     putBar(r.cells, node, links);
     addToday(r.cells);
     wireCells(r.cells, it);
@@ -2255,18 +2272,6 @@ function refreshSchedForm() {
   document.getElementById("sdParentWrap").hidden = kind === "phase";
   document.getElementById("sdEndWrap").hidden = kind === "milestone";
   document.getElementById("sdStartK").textContent = kind === "milestone" ? "日付" : "開始日";
-
-  const item = schedEditingId ? schedById(schedEditingId) : null;
-  const auto = !!item && item.kind === "phase" && kind === "phase" && schedKids(item.id).length > 0;
-  const sEl = document.getElementById("sdStart"), eEl = document.getElementById("sdEnd");
-  if (auto) {
-    const per = schedPeriodOf(item);
-    sEl.value = per.start; eEl.value = per.end;
-  }
-  sEl.disabled = auto; eEl.disabled = auto;
-  document.getElementById("sdAuto").hidden = !auto;
-  document.getElementById("sdAuto").textContent = auto
-    ? "子の期間から自動（作業 " + schedKids(item.id).length + " 件の最小開始日〜最大終了日）" : "";
 }
 
 function closeSchedDrawer() {
@@ -2280,13 +2285,10 @@ function saveSchedDrawer() {
   const title = document.getElementById("sdTitle").value.trim();
   if (!title) { toast("タイトルを入力してください"); document.getElementById("sdTitle").focus(); return; }
   const item = schedEditingId ? schedById(schedEditingId) : null;
-  const auto = !!item && item.kind === "phase" && schedKids(item.id).length > 0;
   const start = document.getElementById("sdStart").value;
   const end = kind === "milestone" ? start : document.getElementById("sdEnd").value;
-  if (!auto) {
-    if (!start || !end) { toast("日付を入力してください"); return; }
-    if (end < start) { toast("終了日は開始日以降にしてください"); return; }
-  }
+  if (!start || !end) { toast("日付を入力してください"); return; }
+  if (end < start) { toast("終了日は開始日以降にしてください"); return; }
   const parentId = kind === "phase" ? null : (document.getElementById("sdParent").value || null);
   const parent = parentId ? schedById(parentId) : null;
   const fields = {
@@ -2294,8 +2296,8 @@ function saveSchedDrawer() {
     projectId: parent ? (parent.projectId || null) : (document.getElementById("sdProject").value || null),
     parentId: parentId,
     assignees: Array.from(document.querySelectorAll("#sdAssignees .pick.on")).map((b) => b.dataset.memberId),
+    start: start, end: end,
   };
-  if (!auto) { fields.start = start; fields.end = end; }
   if (!bridge) { toast("プレビューでは保存されません"); closeSchedDrawer(); return; }
   if (item) send({ type: "updateScheduleItem", itemId: item.id, fields: fields });
   else send({ type: "createScheduleItem", fields: fields });
