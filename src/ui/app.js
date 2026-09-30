@@ -124,6 +124,10 @@ function wireToolbar() {
   document.getElementById("btnSave").onclick = saveDrawer;
   document.getElementById("btnDelete").onclick = guard("削除", deleteDrawer);
   document.getElementById("btnDuplicate").onclick = guard("複製", duplicateDrawer);
+  document.getElementById("fSubAdd").onclick = addSub;
+  document.getElementById("fSubNew").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); addSub(); }
+  });
   document.getElementById("filterClear").onclick = clearFilter;
   document.getElementById("memoToggle").onclick = toggleMemo;
   document.getElementById("memoAdd").onclick = addNote;
@@ -410,6 +414,15 @@ function renderCard(t) {
   const due = el("span", "due" + (isOverdue(t) ? " over" : ""));
   due.textContent = fmtDue(t);
   meta.appendChild(due);
+  // 子タスクは中身を広げず、進み具合だけ見せる（カードの高さを増やさない）
+  const subs = asArray(t.subtasks);
+  if (subs.length) {
+    const doneN = subs.filter((s) => s.done).length;
+    const sc = el("span", "subc" + (doneN === subs.length ? " all" : ""));
+    sc.textContent = "☑ " + doneN + "/" + subs.length;
+    sc.title = "子タスク " + subs.length + " 件中 " + doneN + " 件済み";
+    meta.appendChild(sc);
+  }
   meta.appendChild(el("span", "sp"));
   for (const id of asArray(t.assignees)) {
     const m = memberById(id);
@@ -710,7 +723,9 @@ function visibleTasks() {
   else if (filterGoalId) tasks = tasks.filter((t) => t.goalId === filterGoalId || t.continuingGoalId === filterGoalId);
   if (searchText) {
     const q = searchText.toLowerCase();
-    tasks = tasks.filter((t) => t.title.toLowerCase().includes(q));
+    // 子タスクの文言でも親カードが見つかるようにする
+    tasks = tasks.filter((t) => t.title.toLowerCase().includes(q)
+      || asArray(t.subtasks).some((s) => String(s.title).toLowerCase().includes(q)));
   }
   return tasks;
 }
@@ -733,7 +748,7 @@ function openDrawer(task) {
   const t = task || {
     title: "", status: "todo", goalId: null, continuingGoalId: null,
     assignees: [], due: state.week.range.end, priority: "normal",
-    projectId: null, description: "", history: [],
+    projectId: null, description: "", subtasks: [], history: [],
   };
 
   document.getElementById("drawerTitle").textContent = task ? "タスクを編集" : "新規タスク";
@@ -744,6 +759,10 @@ function openDrawer(task) {
 
   document.getElementById("fTitle").value = t.title || "";
   document.getElementById("fDesc").value = t.description || "";
+  // 子タスクは保存まで手元で編集する（キャンセルで元に戻せるよう複製して持つ）
+  drawerSubs = asArray(t.subtasks).map((s) => ({ id: s.id, title: s.title, done: !!s.done }));
+  document.getElementById("fSubNew").value = "";
+  renderSubs();
   document.getElementById("fDue").value = t.due || "";
   document.getElementById("fPriority").value = t.priority || "normal";
 
@@ -811,10 +830,61 @@ function collectForm() {
     goalId: goalRaw.startsWith("g:") ? goalRaw.slice(2) : null,
     continuingGoalId: goalRaw.startsWith("c:") ? goalRaw.slice(2) : null,
     assignees: assignees,
+    subtasks: normSubs(drawerSubs),
   };
 }
 
+/* ---- 子タスク（チェックリスト）。週の中の手順だけを扱う ---- */
+let drawerSubs = [];
+
+// 保存・比較用にそろえる。空の行は捨てる。新しい行は id 無しで送り、ホスト側で採番する。
+function normSubs(list) {
+  return asArray(list)
+    .map((s) => ({ id: s.id || null, title: String(s.title || "").trim(), done: !!s.done }))
+    .filter((s) => s.title);
+}
+
+function renderSubs() {
+  const wrap = document.getElementById("fSubs");
+  wrap.replaceChildren(...drawerSubs.map((s, i) => {
+    const row = el("div", "sub" + (s.done ? " done" : ""));
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = s.done;
+    cb.onchange = () => { s.done = cb.checked; row.classList.toggle("done", s.done); updateSubCount(); };
+    const tx = el("input", "stx");
+    tx.value = s.title;
+    tx.oninput = () => { s.title = tx.value; };
+    const del = el("button", "sdel");
+    del.type = "button";
+    del.textContent = "✕";
+    del.title = "この子タスクを消す";
+    del.onclick = () => { drawerSubs.splice(i, 1); renderSubs(); };
+    row.append(cb, tx, del);
+    return row;
+  }));
+  updateSubCount();
+}
+
+function updateSubCount() {
+  const n = drawerSubs.length;
+  document.getElementById("fSubCount").textContent =
+    n ? drawerSubs.filter((s) => s.done).length + "/" + n : "";
+}
+
+function addSub() {
+  const input = document.getElementById("fSubNew");
+  const title = input.value.trim();
+  if (!title) return;
+  drawerSubs.push({ id: null, title, done: false });
+  input.value = "";
+  renderSubs();
+  input.focus();
+}
+
 function saveDrawer() {
+  // 追加欄に打ちかけの子タスクがあれば、取りこぼさず含める
+  if (document.getElementById("fSubNew").value.trim()) addSub();
   const fields = collectForm();
   if (!fields.title) { toast("タイトルを入力してください"); document.getElementById("fTitle").focus(); return; }
   if (!bridge) { toast("プレビューでは保存されません"); closeDrawer(); return; }
@@ -849,6 +919,7 @@ function currentFormOf(t) {
     goalId: t.goalId || null,
     continuingGoalId: t.continuingGoalId || null,
     assignees: asArray(t.assignees),
+    subtasks: normSubs(t.subtasks),
   };
 }
 

@@ -191,7 +191,7 @@ function Move-Task {
 }
 
 # 新規タスクを追加して、生成したIDを返す。
-# $Fields は JS から来た任意項目（title/goalId/continuingGoalId/assignees/due/priority/projectId/description/status）。
+# $Fields は JS から来た任意項目（title/goalId/continuingGoalId/assignees/due/priority/projectId/description/subtasks/status）。
 function Add-Task {
     param([string]$Root, [string]$WeekId, $Fields, [string]$Actor = 'unknown')
     Invoke-WithLock -Root $Root -LockName $WeekId -Action {
@@ -217,6 +217,7 @@ function Add-Task {
             priority         = Get-FieldOrDefault $Fields 'priority' 'normal'
             projectId        = Get-FieldOrDefault $Fields 'projectId' $null
             description      = Get-FieldOrDefault $Fields 'description' ''
+            subtasks         = ConvertTo-Subtasks (Get-FieldOrDefault $Fields 'subtasks' @())
             carriedFrom      = $null
             history          = @()
         }
@@ -239,12 +240,13 @@ function Update-Task {
         if (-not $task) { throw "タスクが見つかりません: $TaskId" }
 
         $changed = @()
-        foreach ($name in @('title','status','goalId','continuingGoalId','assignees','due','priority','projectId','description')) {
+        foreach ($name in @('title','status','goalId','continuingGoalId','assignees','due','priority','projectId','description','subtasks')) {
             if (-not (Test-HasField $Fields $name)) { continue }
             $new = $Fields.$name
             if ($name -eq 'title' -and [string]::IsNullOrWhiteSpace([string]$new)) { throw "タイトルは空にできません。" }
             if ($name -eq 'status' -and ([string]$new) -notin @('todo','doing','review','done')) { throw "不正なステータス: $new" }
             if ($name -eq 'assignees') { $new = @($new) }
+            if ($name -eq 'subtasks') { $new = ConvertTo-Subtasks $new }
             if ($task.PSObject.Properties.Name -contains $name) { $task.$name = $new }
             else { $task | Add-Member -NotePropertyName $name -NotePropertyValue $new -Force }
             $changed += $name
@@ -281,6 +283,8 @@ function Copy-Task {
             priority         = $src.priority
             projectId        = $src.projectId
             description      = if ($src.PSObject.Properties.Name -contains 'description') { $src.description } else { '' }
+            # 子タスクは同じ手順をもう一度やる前提で、すべて未チェックに戻す
+            subtasks         = ConvertTo-Subtasks (Get-FieldOrDefault $src 'subtasks' @()) -Reset
             carriedFrom      = $null
             history          = @()
         }
@@ -782,6 +786,26 @@ function Get-FieldOrDefault {
     return $Default
 }
 
+# 子タスク（チェックリスト）を保存用の形 [{ id, title, done }] にそろえる。
+# 空のタイトルは捨てる。-OpenOnly は未チェックだけ残す（週の持ち越し用）。
+# -Reset は全部未チェックにして新しいIDを振る（複製用）。
+function ConvertTo-Subtasks {
+    param($Items, [switch]$OpenOnly, [switch]$Reset)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($s in @($Items)) {
+        if ($null -eq $s) { continue }
+        $title = [string](Get-FieldOrDefault $s 'title' '')
+        if ([string]::IsNullOrWhiteSpace($title)) { continue }
+        $done = [bool](Get-FieldOrDefault $s 'done' $false)
+        if ($OpenOnly -and $done) { continue }
+        $id = [string](Get-FieldOrDefault $s 'id' '')
+        if ($Reset -or $OpenOnly -or -not $id) { $id = New-Id 's' }
+        [void]$out.Add([ordered]@{ id = $id; title = $title.Trim(); done = ($done -and -not $Reset) })
+    }
+    # 1件のときも配列のまま保存されるよう、カンマで包んで返す
+    return ,@($out.ToArray())
+}
+
 function Add-ItemHistory {
     param($Item, [string]$Text)
     $line = "{0} {1}" -f (Get-Date).ToString('yyyy-MM-dd HH:mm'), $Text
@@ -909,6 +933,8 @@ function Close-Week {
                 continuingGoalId = $t.continuingGoalId
                 assignees = @($t.assignees); due = $nextRange.end
                 priority = $t.priority; projectId = $t.projectId
+                # 子タスクは週の中の手順。済んだものはこの週の実績として残し、未チェックだけ運ぶ
+                subtasks = ConvertTo-Subtasks (Get-FieldOrDefault $t 'subtasks' @()) -OpenOnly
                 carriedFrom = $WeekId; history = @()
             })
         }

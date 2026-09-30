@@ -34,23 +34,6 @@
               ],
     "tasks":  [
                   {
-                      "id":  "t-3001",
-                      "title":  "帳票要件の残論点を洗い出す",
-                      "status":  "todo",
-                      "goalId":  "g-w30-a",
-                      "continuingGoalId":  null,
-                      "assignees":  [
-                                        "m-tanaka"
-                                    ],
-                      "due":  "2026-07-24",
-                      "priority":  "high",
-                      "projectId":  "p-b",
-                      "carriedFrom":  null,
-                      "history":  [
-
-                                  ]
-                  },
-                  {
                       "id":  "t-3002",
                       "title":  "保守契約書のドラフト作成",
                       "status":  "todo",
@@ -116,6 +99,23 @@
                       "carriedFrom":  null,
                       "history":  [
 
+                                  ]
+                  },
+                  {
+                      "id":  "t-3001",
+                      "title":  "帳票要件の残論点を洗い出す",
+                      "status":  "doing",
+                      "goalId":  "g-w30-a",
+                      "continuingGoalId":  null,
+                      "assignees":  [
+                                        "m-tanaka"
+                                    ],
+                      "due":  "2026-07-24",
+                      "priority":  "high",
+                      "projectId":  "p-b",
+                      "carriedFrom":  null,
+                      "history":  [
+                                      "2026-09-30 09:11 APPC44: todo → doing"
                                   ]
                   },
                   {
@@ -254,7 +254,9 @@
                       "projectId":  null,
                       "description":  "",
                       "carriedFrom":  null,
-                      "history":  "2026-07-28 13:17 APPC44: 作成"
+                      "history":  [
+                                      "2026-07-28 13:17 APPC44: 作成"
+                                  ]
                   }
               ]
 }
