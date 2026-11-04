@@ -1,0 +1,50 @@
+{
+    "schemaVersion":  1,
+    "items":  [
+                  {
+                      "id":  "sc-7e65550264",
+                      "kind":  "phase",
+                      "projectId":  "p-a",
+                      "parentId":  null,
+                      "title":  "リハーサル",
+                      "start":  "2026-09-30",
+                      "end":  "2026-10-09",
+                      "assignees":  [
+
+                                    ],
+                      "history":  [
+                                      "2026-09-30 09:49 APPC44: 作成"
+                                  ]
+                  },
+                  {
+                      "id":  "sc-798aca581f",
+                      "kind":  "task",
+                      "projectId":  "p-a",
+                      "parentId":  "sc-7e65550264",
+                      "title":  "タスク1",
+                      "start":  "2026-09-30",
+                      "end":  "2026-10-02",
+                      "assignees":  [
+
+                                    ],
+                      "history":  [
+                                      "2026-09-30 09:49 APPC44: 作成"
+                                  ]
+                  },
+                  {
+                      "id":  "sc-e4d1b548e6",
+                      "kind":  "task",
+                      "projectId":  "p-b",
+                      "parentId":  null,
+                      "title":  "テスト",
+                      "start":  "2026-09-30",
+                      "end":  "2026-10-02",
+                      "assignees":  [
+
+                                    ],
+                      "history":  [
+                                      "2026-09-30 10:42 APPC44: 作成"
+                                  ]
+                  }
+              ]
+}
