@@ -490,6 +490,17 @@ body {
 .s-add:hover { color: var(--accent); border-color: var(--accent); }
 .s-asg { margin-left: auto; display: flex; flex: none; }
 .s-asg .av { width: 16px; height: 16px; font-size: 8px; margin-left: -3px; }
+/* 工数（人日）。名前の列の右寄せ、バー上、工程バーの外、週の帯の4か所 */
+.s-eff { margin-left: auto; flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.s-eff + .s-asg, .s-eff + .s-add { margin-left: 6px; }
+.est-over.s-eff, .s-eff-out.est-over { color: var(--danger); font-weight: 700; }
+.s-be { position: absolute; top: 0; right: 0; height: 100%; padding: 0 5px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; background: var(--accent); white-space: nowrap; }
+.s-bar-task.est-over, .s-bar-task.est-over .s-be { background: var(--danger); }
+.s-eff-out { position: absolute; top: 6px; font-family: var(--font-mono); font-size: 10px; line-height: 14px; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; z-index: 1; }
+.s-bar-phase.est-over { background: var(--danger); opacity: 1; }
+.s-bar-phase.est-over::before, .s-bar-phase.est-over::after { background: var(--danger); }
+.s-wh { position: absolute; bottom: 1px; z-index: 3; font-family: var(--font-mono); font-size: 9px; line-height: 10px; padding: 0 3px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; pointer-events: auto; }
+.s-wh.open { border-style: dashed; color: var(--ink-3); opacity: .85; font-style: italic; }
 .s-head { position: sticky; top: 0; z-index: 6; background: var(--surface); }
 .s-head .s-name { z-index: 8; color: var(--ink-3); font-family: var(--font-mono); font-size: 10px; }
 .s-head .s-row { height: 18px; }

@@ -72,7 +72,7 @@ function handleHostMessage(msg) {
     }
     case "scheduleLinks":
       schedLinks = asArray(msg.links);
-      schedEffort = asArray(msg.effort);   // 第3段階（ガントの実績/見積）用。今は保持するだけ
+      schedEffort = asArray(msg.effort);   // ガントの出来高/見積の表示に使う
       if (state && state.view === "schedule") render();
       break;
     case "retro":
@@ -388,6 +388,21 @@ function progressOf(subs, status) {
   return c.total ? c.done / c.total : 0;
 }
 function taskProgress(t) { return progressOf(t.subtasks, t.status); }
+// 目標に紐づくタスク群の進み具合。工数の入ったタスクがあれば 進捗率×工数 で重み付けし、
+// 無ければ 完了数/件数。工数未入力のタスクは重み付けの計算に入れない（missing に数だけ残す）
+function goalProgress(linked) {
+  const total = linked.length;
+  const done = linked.filter((t) => t.status === "done").length;
+  let hours = 0, earned = 0, n = 0;
+  for (const t of linked) {
+    if (!hasHours(t)) continue;
+    n++;
+    hours += Number(t.hours);
+    earned += taskProgress(t) * Number(t.hours);
+  }
+  if (hours > 0) return { pct: earned / hours, done, total, weighted: true, earned, hours, missing: total - n };
+  return { pct: total ? done / total : 0, done, total, weighted: false, earned: 0, hours: 0, missing: 0 };
+}
 // 目標の候補イベント（紐づけ先のうち、存在する非 goal の予定）のID
 function eventCandidates(goalId) {
   if (!goalId) return [];
@@ -462,8 +477,8 @@ function renderGoalLane() {
   const tasks = asArray(state.week.tasks);
   for (const g of weekGoals) {
     const linked = tasks.filter((t) => t.goalId === g.id);
-    const done = linked.filter((t) => t.status === "done").length;
-    const pct = linked.length ? Math.round((done / linked.length) * 100) : 0;
+    const gp = goalProgress(linked);
+    const pct = Math.round(gp.pct * 100);
     const node = el("div", "goal" + (filterGoalId === g.id ? " sel" : ""));
     let html = '<div class="top"><span class="gkey">' + esc(g.key) + '</span>'
       + '<span class="gt">' + esc(g.title) + "</span>"
@@ -471,7 +486,8 @@ function renderGoalLane() {
     if (g.carriedFrom) html += '<div class="carry-from">↻ ' + esc(g.carriedFrom) + " から持ち越し"
       + (g.carryStreak >= 2 ? "（" + g.carryStreak + "週連続）" : "") + "</div>";
     html += '<div class="bar"><i style="width:' + pct + '%"></i></div>'
-      + '<div class="gmeta"><span>' + done + "/" + linked.length + ' 完了</span><span class="sp"></span></div>';
+      + '<div class="gmeta"><span>' + gp.done + "/" + gp.total + ' 完了'
+      + (gp.hours > 0 ? " ・ " + fmtHours(gp.earned) + " / " + fmtHours(gp.hours) + "h" : "") + '</span><span class="sp"></span></div>';
     // 紐づけは全部出す。予定が削除されて存在しない ID は無視
     for (const sid of goalScheduleIds(g)) {
       const sc = schedById(sid);
@@ -479,6 +495,10 @@ function renderGoalLane() {
     }
     node.innerHTML = html;
     node.onclick = () => toggleFilter(g.id);
+    if (gp.weighted) {
+      node.querySelector(".gmeta").title = "進捗率 × 工数でバーを計算しています"
+        + (gp.missing ? "\n工数未入力 " + gp.missing + "件はバーに含めていません" : "");
+    }
     if (!state.week.closed && !state.readOnly) {
       const edit = el("button", "btn icon gedit");
       edit.textContent = "✎";
@@ -2177,6 +2197,75 @@ function schedIsOverrun(period, links) {
   return latest.status !== "achieved";
 }
 
+/* 工数（出来高/見積）の集計。effort は [{ weekId, scheduleId, hours, closed }]。
+   締め済み週 = 確定（done）、未締めの週 = 見込み（open）。単位は時間で返し、表示でだけ人日にする */
+function schedEffortFor(ids, effort) {
+  const set = new Set(ids);
+  let done = 0, open = 0;
+  for (const e of (effort || schedEffort)) {
+    if (!e || e.scheduleId == null || !set.has(e.scheduleId)) continue;
+    const h = Number(e.hours);
+    if (!isFinite(h)) continue;
+    if (e.closed) done += h; else open += h;
+  }
+  return { done: done, open: open };
+}
+// 週IDごとの工数（帯に出す用）。同じ週は同じ締め状態なので closed はそのまま持つ
+function schedEffortWeeks(ids, effort) {
+  const set = new Set(ids);
+  const m = new Map();
+  for (const e of (effort || schedEffort)) {
+    if (!e || e.scheduleId == null || !set.has(e.scheduleId)) continue;
+    const h = Number(e.hours);
+    if (!isFinite(h) || h === 0) continue;
+    const cur = m.get(e.weekId) || { hours: 0, closed: true };
+    cur.hours += h;
+    if (!e.closed) cur.closed = false;
+    m.set(e.weekId, cur);
+  }
+  return m;
+}
+function schedHasEst(v) { return v !== null && v !== undefined && v !== "" && isFinite(Number(v)); }
+// イベント1件の出来高と見積（人日）。kids は工程の子（作業・マイルストーン）。長期目標は null
+function schedEventStats(item, kids, effort, hpd) {
+  if (item.kind === "goal") return null;
+  const h = hpd || hoursPerDay();
+  const ids = [item.id].concat(item.kind === "phase" ? kids.map((k) => k.id) : []);
+  const e = schedEffortFor(ids, effort);
+  const own = schedHasEst(item.estimate) ? Number(item.estimate) : null;
+  let kidsEst = null;
+  if (item.kind === "phase") {
+    for (const k of kids) {
+      if (k.kind === "task" && schedHasEst(k.estimate)) kidsEst = (kidsEst || 0) + Number(k.estimate);
+    }
+  }
+  const est = item.kind === "milestone" ? null : (own !== null ? own : kidsEst);
+  const done = e.done / h, open = e.open / h;
+  return {
+    done: done, open: open, est: est, own: own, kidsEst: kidsEst,
+    mismatch: item.kind === "phase" && own !== null && kidsEst !== null && round1(own) !== round1(kidsEst),
+    over: est !== null && round1(done + open) > round1(est),
+    overBy: est !== null ? round1(done + open - est) : 0,
+  };
+}
+function schedEffortEmpty(st) { return !st || (st.done === 0 && st.open === 0 && st.est === null); }
+// 数字だけの短い形（3.5(+0.5)）と、人日つきの形
+function schedEffortNum(st) {
+  return fmtHours(st.done) + (st.open > 0 ? "(+" + fmtHours(st.open) + ")" : "");
+}
+function schedEffortLabel(st) {
+  if (schedEffortEmpty(st)) return "";
+  return schedEffortNum(st) + (st.est !== null ? " / " + fmtHours(st.est) : "") + "人日";
+}
+function schedEffortTip(st) {
+  if (schedEffortEmpty(st)) return "";
+  const lines = ["出来高 " + fmtHours(st.done) + "人日（確定）" + (st.open > 0 ? " ＋ " + fmtHours(st.open) + "人日（未締めの週の見込み）" : "")];
+  if (st.est !== null) lines.push("見積 " + fmtHours(st.est) + "人日");
+  if (st.mismatch) lines.push("工程の見積 " + fmtHours(st.own) + "人日 ／ 作業の見積の合計 " + fmtHours(st.kidsEst) + "人日");
+  if (st.over) lines.push("見積を " + fmtHours(st.overBy) + "人日 超過");
+  return lines.join("\n");
+}
+
 function schedRequestLinks() { if (bridge) send({ type: "getScheduleLinks" }); }
 
 /* 描画 */
@@ -2262,7 +2351,7 @@ function renderScheduleView() {
     s.textContent = String(+d.slice(8));
     hDay.cells.appendChild(s);
   }
-  hMonth.name.textContent = "長期目標 / 案件 / 工程 / 作業";
+  hMonth.name.textContent = "長期目標 / 案件 / 工程 / 作業（右端は人日）";
   head.appendChild(hMonth.row); head.appendChild(hWeek.row); head.appendChild(hDay.row);
   grid.appendChild(head);
 
@@ -2282,7 +2371,7 @@ function renderScheduleView() {
       cells.appendChild(b);
     }
   };
-  const putBar = (cells, node, links) => {
+  const putBar = (cells, node, links, st) => {
     const it = node.item, p = node.period;
     if (!p.start) return;
     const s = schedDiff(from, p.start), e = schedDiff(from, p.end);
@@ -2295,15 +2384,28 @@ function renderScheduleView() {
     if (it.kind === "milestone") {
       b.style.left = s * SCHED_DAY_W + "px";
       b.textContent = "◆";
-      b.title = (it.title || "") + "（" + p.start + "）";
+      b.title = (it.title || "") + "（" + p.start + "）" + (schedEffortEmpty(st) ? "" : "\n" + schedEffortTip(st));
       cells.appendChild(b);
       return;
     }
     b.style.left = cs * SCHED_DAY_W + "px";
     b.style.width = (ce - cs + 1) * SCHED_DAY_W + "px";
-    b.title = (it.title || "") + "（" + p.start + " – " + p.end + "）";
+    b.title = (it.title || "") + "（" + p.start + " – " + p.end + "）" + (schedEffortEmpty(st) ? "" : "\n" + schedEffortTip(st));
+    const effLabel = schedEffortLabel(st);
+    if (st && st.over) b.classList.add("est-over");
     if (it.kind === "task") {
       const t = el("span", "s-bt"); t.textContent = it.title || ""; b.appendChild(t);
+      // 狭いときはタイトルを削って数字を残す（数字側は縮めない）
+      if (effLabel) { const g = el("span", "s-be"); g.textContent = effLabel; b.appendChild(g); }
+    }
+    if (it.kind === "phase" && effLabel) {
+      // 工程のバーは細くて字が入らないので、右の外（右端にいるときは左の外）に出す
+      const g = el("span", "s-eff-out" + (st.over ? " est-over" : ""));
+      g.textContent = effLabel;
+      g.title = schedEffortTip(st);
+      if ((ce + 1) * SCHED_DAY_W + 110 > days * SCHED_DAY_W) g.style.right = (days - cs) * SCHED_DAY_W + 4 + "px";
+      else g.style.left = (ce + 1) * SCHED_DAY_W + 4 + "px";
+      cells.appendChild(g);
     }
     if (isGoal) {
       const t = el("span", "s-bt"); t.textContent = it.title || ""; b.appendChild(t);
@@ -2318,7 +2420,7 @@ function renderScheduleView() {
     }
     cells.appendChild(b);
   };
-  const putMarks = (cells, links) => {
+  const putMarks = (cells, links, weekEff) => {
     const byWeek = new Map();
     for (const l of links) {
       const mon = schedWeekMonday(l.weekId);
@@ -2328,6 +2430,16 @@ function renderScheduleView() {
       if (!byWeek.has(idx)) byWeek.set(idx, []);
       byWeek.get(idx).push(l);
     }
+    // 工数だけがある週にも帯を作る（目標のマークは空のまま）
+    const effByIdx = new Map();
+    if (weekEff) weekEff.forEach((v, weekId) => {
+      const mon = schedWeekMonday(weekId);
+      if (!mon) return;
+      const idx = schedDiff(from, mon);
+      if (idx + 7 <= 0 || idx >= days) return;
+      effByIdx.set(idx, { weekId: weekId, v: v });
+      if (!byWeek.has(idx)) byWeek.set(idx, []);
+    });
     byWeek.forEach((arr, idx) => {
       const band = el("div", "s-wk");
       band.style.left = idx * SCHED_DAY_W + "px";
@@ -2339,6 +2451,15 @@ function renderScheduleView() {
         band.appendChild(m);
       }
       cells.appendChild(band);
+      const ef = effByIdx.get(idx);
+      if (ef) {
+        // 帯はバーの下に隠れる重なり順なので、工数タグは cells 直下に置く
+        const w = el("span", "s-wh" + (ef.v.closed ? "" : " open"));
+        w.textContent = fmtHours(ef.v.hours) + "h";
+        w.title = shortWeek(ef.weekId) + " の工数 " + fmtHours(ef.v.hours) + "h（" + (ef.v.closed ? "確定" : "見込み・未締め") + "）";
+        w.style.left = idx * SCHED_DAY_W + 2 + "px";
+        cells.appendChild(w);
+      }
     });
   };
   const wireCells = (cells, item) => {
@@ -2362,10 +2483,21 @@ function renderScheduleView() {
     t.classList.add("editable");
     t.onclick = guard("スケジュール編集", () => openSchedDrawer(item));
   };
+  // 名前の列の右寄せに「出来高/見積」（人日）。見積が無ければ出来高だけ
+  const addNameEffort = (name, st) => {
+    if (schedEffortEmpty(st)) return;
+    const g = el("span", "s-eff" + (st.over ? " est-over" : ""));
+    g.textContent = schedEffortNum(st) + (st.est !== null ? "/" + fmtHours(st.est) : "");
+    g.title = "人日\n" + schedEffortTip(st);
+    name.appendChild(g);
+  };
   const itemRow = (node, level) => {
     const it = node.item;
     const r = mkRow(it.kind === "phase" ? "s-phase-row" : "");
     const links = schedLinksFor([it.id].concat(node.kids.map((k) => k.item.id)));
+    const kidItems = node.kids.map((k) => k.item);
+    const st = schedEventStats(it, kidItems);
+    const effIds = [it.id].concat(it.kind === "phase" ? kidItems.map((k) => k.id) : []);
     r.name.style.paddingLeft = 8 + level * 16 + "px";
     if (it.kind === "phase") {
       const open = !schedCollapsed.has(it.id);
@@ -2382,6 +2514,7 @@ function renderScheduleView() {
       editable(t, it);
       r.name.appendChild(t);
       const cnt = el("span", "s-cnt"); cnt.textContent = String(node.kids.length); r.name.appendChild(cnt);
+      addNameEffort(r.name, st);
       addBtn(r.name, "この工程に作業を追加", () => openSchedDrawer(null, { kind: "task", projectId: it.projectId || null, parentId: it.id, start: node.period.start }));
     } else {
       const t = el("span", "s-title");
@@ -2393,6 +2526,7 @@ function renderScheduleView() {
         st.textContent = SCHED_GOAL_STATUS_JA[schedGoalStatus(it)] || schedGoalStatus(it);
         r.name.appendChild(st);
       }
+      if (it.kind !== "goal") addNameEffort(r.name, st);
       const asg = asArray(it.assignees).map(memberById).filter(Boolean);
       if (asg.length) {
         const w = el("span", "s-asg");
@@ -2400,9 +2534,9 @@ function renderScheduleView() {
         r.name.appendChild(w);
       }
     }
-    putMarks(r.cells, links);
+    putMarks(r.cells, links, st ? schedEffortWeeks(effIds) : null);
     putSpill(r.cells, it);
-    putBar(r.cells, node, links);
+    putBar(r.cells, node, links, st);
     addToday(r.cells);
     wireCells(r.cells, it);
     return r.row;
@@ -2912,5 +3046,14 @@ function buildStandaloneState() {
     { id: "sc-4", kind: "milestone", projectId: "p-a", parentId: null, title: "契約更新日", start: "2026-08-14", end: "2026-08-14", assignees: [], history: [] },
     { id: "sc-5", kind: "task", projectId: "p-b", parentId: null, title: "要件ヒアリング", start: "2026-07-15", end: "2026-07-22", assignees: ["m3"], history: [], estimate: 3 },
   ] };
+  // 工数のデモ（W29 は締め済み、W30 は未締め）。工程の合計・見込み・見積超過・見積なしが見える値にしている
+  schedEffort = [
+    { weekId: "2026-W29", scheduleId: "sc-1", hours: 4, closed: true },
+    { weekId: "2026-W29", scheduleId: "sc-2", hours: 16, closed: true },
+    { weekId: "2026-W30", scheduleId: "sc-2", hours: 8, closed: false },
+    { weekId: "2026-W30", scheduleId: "sc-3", hours: 8, closed: false },
+    { weekId: "2026-W29", scheduleId: "sc-5", hours: 16, closed: true },
+    { weekId: "2026-W30", scheduleId: "sc-5", hours: 12, closed: false },
+  ];
   return { type: "state", board, week, weeks: [{ id: "2026-W30" }], schedule, view: "board", today: "2026-07-24", connected: true };
 }
