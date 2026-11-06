@@ -1216,11 +1216,20 @@ function Close-Week {
         }
         # 継続目標の通算件数に、この週の完了タスクを加算する（解除で同じ件数を戻すため記録する）
         $doneCounts = Get-ContinuingDoneCounts $week
-        Update-ContinuingTotalDone -Root $Root -Counts $doneCounts -Sign 1
         $record.continuingDone = $doneCounts
         if ($week.PSObject.Properties.Name -contains 'closeRecord') { $week.closeRecord = $record }
         else { $week | Add-Member -NotePropertyName closeRecord -NotePropertyValue $record -Force }
         Write-JsonFile $path $week
+
+        # board の加算は週ファイルを書いた後で行う。失敗しても締め自体は成功させ、
+        # 加算していない分を解除で減算しないよう記録を消して書き直す。
+        try {
+            Update-ContinuingTotalDone -Root $Root -Counts $doneCounts -Sign 1
+        } catch {
+            Write-Warning ("通算件数を更新できなかったため、継続目標の通算は加算されていません: {0}" -f $_.Exception.Message)
+            $record.Remove('continuingDone')
+            Write-JsonFile $path $week
+        }
 
         return $nextId
     }
@@ -1334,14 +1343,23 @@ function Resume-Week {
         if (-not $w) { throw "週が見つかりません: $WeekId" }
         # 締めで加算した通算件数を戻す。記録が無い週（この機能より前に締めた週）は加算していないので戻さない。
         $oldRec = if ($w.PSObject.Properties.Name -contains 'closeRecord') { $w.closeRecord } else { $null }
-        if ($oldRec -and (Test-HasField $oldRec 'continuingDone') -and $oldRec.continuingDone) {
-            Update-ContinuingTotalDone -Root $Root -Counts (Get-ContinuingDoneCounts $w) -Sign -1
-        }
+        # 件数 0 の {} も「記録あり」だが、数え直しも空になり減算は何もしない。
+        $subCounts = $null
+        if ($oldRec -and (Test-HasField $oldRec 'continuingDone')) { $subCounts = Get-ContinuingDoneCounts $w }
         $w.closed = $false
         foreach ($g in @($w.goals)) { $g.status = 'running' }
         if ($w.PSObject.Properties.Name -contains 'closeRecord') { $w.closeRecord = $null }
         Add-ItemHistory -Item $w -Text ("{0}: {1} の締めを解除" -f $Actor, $WeekId)
         Write-JsonFile $path $w
+
+        # board の減算は週ファイルを書いた後で行う。失敗しても解除自体は成功させる。
+        if ($subCounts) {
+            try {
+                Update-ContinuingTotalDone -Root $Root -Counts $subCounts -Sign -1
+            } catch {
+                Write-Warning ("通算件数を更新できなかったため、継続目標の通算は減算されていません: {0}" -f $_.Exception.Message)
+            }
+        }
     }
 
     return [ordered]@{ removed = $removed; kept = $kept; nextWeekId = $(if ($rec) { [string]$rec.nextWeekId } else { '' }) }
