@@ -358,8 +358,10 @@ function Invoke-UiMessage {
                 Send-ToUi @{ type = 'retro'; weeks = $retro }
             }
             'createGoal' {
+                # 紐づけは scheduleIds（配列）。旧形式の scheduleId だけの要求も受ける
+                $sids = if (Test-HasField $msg 'scheduleIds') { @($msg.scheduleIds) } else { @() }
                 $sid = if (Test-HasField $msg 'scheduleId') { [string]$msg.scheduleId } else { '' }
-                Add-Goal -Root $DataRoot -WeekId $msg.weekId -Title $msg.title -Actor $Actor -ScheduleId $sid | Out-Null
+                Add-Goal -Root $DataRoot -WeekId $msg.weekId -Title $msg.title -Actor $Actor -ScheduleIds $sids -ScheduleId $sid | Out-Null
                 $view = if ((Test-HasField $msg 'viewWeekId') -and $msg.viewWeekId) { [string]$msg.viewWeekId } else { $msg.weekId }
                 Send-State $view
                 Send-Toast "目標を追加しました"

@@ -150,6 +150,11 @@
           <option value="carried">持ち越し</option>
         </select>
       </label>
+      <div class="field">
+        <span class="k">紐づけ（長期目標・予定）</span>
+        <div class="glinks" id="gLinks"></div>
+        <select id="gLinkAdd"></select>
+      </div>
       <p class="hint" id="gHint"></p>
     </div>
     <div class="drawer-f">
@@ -175,7 +180,16 @@
         <span class="k">タイトル</span>
         <input type="text" id="sdTitle" placeholder="例: 画面設計" maxlength="100">
       </label>
-      <div class="field-row">
+      <label class="field" id="sdStatusWrap" hidden>
+        <span class="k">状態</span>
+        <select id="sdStatus">
+          <option value="running">進行中</option>
+          <option value="achieved">達成</option>
+          <option value="missed">未達</option>
+          <option value="dropped">中止</option>
+        </select>
+      </label>
+      <div class="field-row" id="sdProjRow">
         <label class="field">
           <span class="k">案件</span>
           <select id="sdProject"></select>

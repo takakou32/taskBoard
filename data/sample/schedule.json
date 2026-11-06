@@ -2,6 +2,22 @@
     "schemaVersion":  1,
     "items":  [
                   {
+                      "id":  "sc-goal-flow01",
+                      "kind":  "goal",
+                      "projectId":  null,
+                      "parentId":  null,
+                      "title":  "業務フローの改善",
+                      "start":  "2026-09-01",
+                      "end":  "2026-12-25",
+                      "assignees":  [
+
+                                    ],
+                      "history":  [
+                                      "2026-09-01 09:00 APPC44: 作成"
+                                  ],
+                      "status":  "running"
+                  },
+                  {
                       "id":  "sc-7e65550264",
                       "kind":  "phase",
                       "projectId":  "p-a",

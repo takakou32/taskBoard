@@ -321,6 +321,8 @@ body {
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field .k { font-size: 10px; font-family: var(--font-mono); letter-spacing: .1em; color: var(--ink-3); text-transform: uppercase; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* display を指定した要素は hidden 属性が効かなくなるので明示する */
+.field[hidden], .field-row[hidden], .field select[hidden] { display: none; }
 .field input, .field select, .field textarea {
   font-family: var(--font-ui); font-size: 13px; color: var(--ink);
   background: var(--paper); border: 1px solid var(--rule); border-radius: 5px;
@@ -444,6 +446,11 @@ body {
 .sched-more:hover { color: var(--accent); }
 .goal .sched-link { font-size: 10.5px; color: var(--ink-3); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 週の目標ドロワー: 紐づけ欄 */
+.glinks { display: flex; flex-direction: column; gap: 4px; }
+.glink { display: flex; align-items: center; gap: 6px; border: 1px solid var(--rule); border-radius: 5px; padding: 3px 4px 3px 8px; background: var(--surface-2); }
+.glink .gl-t { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- schedule (gantt) ---------- */
 .sched-wrap { min-width: 100%; }
 .sched-bar { position: sticky; left: 0; z-index: 7; display: flex; align-items: center; gap: 8px; padding: 8px 12px; width: 100%; max-width: 100vw; background: var(--paper); }
@@ -501,6 +508,13 @@ body.s-dragging, body.s-dragging * { user-select: none; }
 body.s-dg-move, body.s-dg-move * { cursor: grabbing !important; }
 body.s-dg-rs, body.s-dg-rs * { cursor: ew-resize !important; }
 .s-dragtip { position: fixed; z-index: 70; pointer-events: none; padding: 2px 8px; border-radius: 4px; background: var(--ink); color: var(--paper); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; box-shadow: var(--shadow); }
+/* 長期目標: 枠線だけのバー＋終了日側の旗。達成・未達・中止は薄くして、いま進行中のものを目立たせる */
+.s-bar-goal { position: absolute; top: 4px; height: 18px; box-sizing: border-box; border: 2px solid var(--accent); border-radius: 3px; background: transparent; color: var(--ink); font-size: 10px; line-height: 14px; overflow: hidden; z-index: 1; }
+.s-bar-goal .s-bt { padding-right: 16px; }
+.s-bg-flag { position: absolute; top: 0; right: 2px; font-style: normal; color: var(--accent); line-height: 14px; }
+.s-bar-goal.gs-achieved, .s-bar-goal.gs-missed, .s-bar-goal.gs-dropped { opacity: .45; }
+.s-gst { flex: none; font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-3); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; }
+.s-gst.achieved { color: var(--st-done); border-color: var(--st-done); }
 .s-over { position: absolute; top: 0; bottom: 0; right: 0; width: 7px; background: var(--danger); }
 .s-spill { position: absolute; top: 8px; height: 10px; border-radius: 2px; background: var(--danger); opacity: .3; border: 1px dashed var(--danger); box-sizing: border-box; z-index: 1; }
 .s-bar-phase .s-over { top: 0; height: 6px; width: 8px; }

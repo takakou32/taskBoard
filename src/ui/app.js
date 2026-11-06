@@ -343,19 +343,34 @@ function laneSchedCandidates() {
   const r = state.week && state.week.range;
   if (!r) return [];
   const items = schedItems();
-  const used = new Set(asArray(state.week.goals).map((g) => g.scheduleId).filter(Boolean));
+  const used = new Set();
+  for (const g of asArray(state.week.goals)) for (const id of goalScheduleIds(g)) used.add(id);
   const hasChild = new Set(items.map((x) => x.parentId).filter(Boolean));
   return items.filter((it) => {
     if (used.has(it.id)) return false;
+    // 長期目標は進行中のものだけ候補にする（達成・未達・中止は今週の目標にしない）
+    if (it.kind === "goal") return schedGoalStatus(it) === "running" && it.start <= r.end && it.end >= r.start;
     if (it.kind === "phase" && hasChild.has(it.id)) return false;
     return it.start <= r.end && it.end >= r.start;
   });
 }
+// 週の目標が紐づけている予定IDの配列。旧形式（scheduleId 単数）の目標は1件とみなす
+function goalScheduleIds(g) {
+  if (g.scheduleIds !== undefined && g.scheduleIds !== null) return asArray(g.scheduleIds).filter(Boolean);
+  return g.scheduleId ? [g.scheduleId] : [];
+}
+// 紐づけ先の表示名（長期目標は 🎯、予定は 📅 ＋ 工程 › 作業）
+function schedLinkLabel(sc) {
+  if (sc.kind === "goal") return "🎯 " + sc.title;
+  return "📅 " + lanePathParts(sc).slice(-2).join(" › ");
+}
+function schedGoalStatus(it) { return it.status || "running"; }
+const SCHED_GOAL_STATUS_JA = { running: "進行中", achieved: "達成", missed: "未達", dropped: "中止" };
 function laneSchedRow(it) {
   const row = el("div", "sched-row");
   const txt = el("div", "st");
   const ms = it.kind === "milestone";
-  txt.textContent = (ms ? "◆ " : "") + lanePathParts(it).join(" › ") + (ms ? "（" + it.start.slice(5).replace("-", "/") + "）" : "");
+  txt.textContent = (ms ? "◆ " : "") + (it.kind === "goal" ? "🎯 " : "") + lanePathParts(it).join(" › ") + (ms ? "（" + it.start.slice(5).replace("-", "/") + "）" : "");
   txt.title = txt.textContent;
   row.appendChild(txt);
   const btn = el("button", "btn sm");
@@ -404,8 +419,11 @@ function renderGoalLane() {
       + (g.carryStreak >= 2 ? "（" + g.carryStreak + "週連続）" : "") + "</div>";
     html += '<div class="bar"><i style="width:' + pct + '%"></i></div>'
       + '<div class="gmeta"><span>' + done + "/" + linked.length + ' 完了</span><span class="sp"></span></div>';
-    const sc = g.scheduleId ? schedById(g.scheduleId) : null;
-    if (sc) html += '<div class="sched-link">📅 ' + esc(lanePathParts(sc).slice(-2).join(" › ")) + "</div>";
+    // 紐づけは全部出す。予定が削除されて存在しない ID は無視
+    for (const sid of goalScheduleIds(g)) {
+      const sc = schedById(sid);
+      if (sc) html += '<div class="sched-link">' + esc(schedLinkLabel(sc)) + "</div>";
+    }
     node.innerHTML = html;
     node.onclick = () => toggleFilter(g.id);
     if (!state.week.closed && !state.readOnly) {
@@ -1015,6 +1033,64 @@ function deleteDrawer() {
 
 /* ---------------- 週の目標 編集ドロワー ---------------- */
 let editingGoalId = null;
+let gLinkIds = [];   // 編集中の目標が紐づけている予定ID
+
+// 紐づけ欄: 紐づき済みを1行ずつ出し、追加用セレクトを作り直す
+function renderGoalLinks() {
+  const box = document.getElementById("gLinks");
+  const rows = [];
+  for (const id of gLinkIds) {
+    const sc = schedById(id);
+    if (!sc) continue;   // 削除された予定は表示しない（紐づけ自体は残す）
+    const row = el("div", "glink");
+    const txt = el("span", "gl-t");
+    txt.textContent = schedLinkLabel(sc); txt.title = txt.textContent;
+    const x = el("button", "btn icon");
+    x.type = "button"; x.textContent = "✕"; x.title = "紐づけを外す";
+    x.onclick = () => { gLinkIds = gLinkIds.filter((v) => v !== id); renderGoalLinks(); };
+    row.appendChild(txt); row.appendChild(x);
+    rows.push(row);
+  }
+  box.replaceChildren(...rows);
+
+  const sel = document.getElementById("gLinkAdd");
+  sel.replaceChildren();
+  const addOpt = (parent, value, label) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label; parent.appendChild(o);
+  };
+  const group = (label) => { const g = document.createElement("optgroup"); g.label = label; return g; };
+  addOpt(sel, "", "＋ 追加");
+  const linked = new Set(gLinkIds);
+  const items = schedItems().filter((i) => !linked.has(i.id));
+  // 長期目標は進行中のものだけ選べる
+  const goals = items.filter((i) => i.kind === "goal" && schedGoalStatus(i) === "running").sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  if (goals.length) {
+    const og = group("長期目標");
+    for (const i of goals) addOpt(og, i.id, "🎯 " + i.title);
+    sel.appendChild(og);
+  }
+  const known = new Set(asArray(state.board.projects).map((p) => p.id));
+  const buckets = asArray(state.board.projects).map((p) => ({ name: p.name, list: items.filter((i) => i.kind !== "goal" && i.projectId === p.id) }));
+  buckets.push({ name: "案件なし", list: items.filter((i) => i.kind !== "goal" && (!i.projectId || !known.has(i.projectId))) });
+  for (const b of buckets) {
+    if (!b.list.length) continue;
+    const og = group(b.name);
+    for (const i of b.list) {
+      const par = i.parentId ? schedById(i.parentId) : null;
+      const label = (i.kind === "milestone" ? "◆ " : "") + (par && par.kind === "phase" ? par.title + " › " : "") + i.title;
+      addOpt(og, i.id, label);
+    }
+    sel.appendChild(og);
+  }
+  sel.value = "";
+  sel.hidden = sel.options.length <= 1;   // 選べるものが無いときは欄ごと隠す
+  sel.onchange = () => {
+    if (!sel.value) return;
+    if (!gLinkIds.includes(sel.value)) gLinkIds.push(sel.value);
+    renderGoalLinks();
+  };
+}
 
 function openGoalDrawer(g) {
   if (state.week.closed) { toast("締め済みの週は編集できません"); return; }
@@ -1025,6 +1101,9 @@ function openGoalDrawer(g) {
   document.getElementById("goalDrawerTitle").textContent = g.key + " の目標を編集";
   document.getElementById("gTitle").value = g.title || "";
   document.getElementById("gStatus").value = g.status || "running";
+  // 紐づけは作業用の写しを編集し、保存でまとめて送る（存在しない ID も落とさず持ち回る）
+  gLinkIds = goalScheduleIds(g).slice();
+  renderGoalLinks();
 
   let hint = "紐づくタスク " + linked.length + " 件。";
   hint += g.carriedFrom ? " " + g.carriedFrom + " から持ち越した目標です。" : "";
@@ -1049,7 +1128,7 @@ function saveGoalDrawer() {
   if (!bridge) { toast("プレビューでは保存されません"); closeGoalDrawer(); return; }
   send({
     type: "updateGoal", weekId: state.week.id, goalId: editingGoalId,
-    fields: { title: title, status: document.getElementById("gStatus").value },
+    fields: { title: title, status: document.getElementById("gStatus").value, scheduleIds: gLinkIds.slice() },
   });
   closeGoalDrawer();
 }
@@ -1901,7 +1980,8 @@ function schedTree() {
   const known = new Set(projects.map((p) => p.id));
   const groups = [];
   const mk = (project) => {
-    const mine = items.filter((i) => (project ? i.projectId === project.id : !i.projectId || !known.has(i.projectId)));
+    // 長期目標は案件に属さず、別グループ（schedGoalNodes）に出す
+    const mine = items.filter((i) => i.kind !== "goal" && (project ? i.projectId === project.id : !i.projectId || !known.has(i.projectId)));
     const top = [];
     for (const i of mine) {
       if (i.kind === "phase") {
@@ -1922,6 +2002,11 @@ function schedTree() {
   const none = mk(null);
   if (none.top.length) groups.push(none);
   return groups;
+}
+
+// 長期目標の行（開始日順）。案件の木とは別に、一番上のグループとして出す
+function schedGoalNodes() {
+  return schedItems().filter((i) => i.kind === "goal").map(schedNode).sort(schedCmp);
 }
 
 // 予定IDごとの目標リンク。工程は子の分もまとめる
@@ -1971,6 +2056,7 @@ function renderScheduleView() {
     const sp = el("span", "spacer"); bar.appendChild(sp);
     bar.appendChild(mkBtn("＋ 工程", () => openSchedDrawer(null, { kind: "phase" }), "primary"));
     bar.appendChild(mkBtn("＋ 作業", () => openSchedDrawer(null, { kind: "task" }), "primary"));
+    bar.appendChild(mkBtn("＋ 長期目標", () => openSchedDrawer(null, { kind: "goal" })));
   }
   wrap.appendChild(bar);
 
@@ -2024,7 +2110,7 @@ function renderScheduleView() {
     s.textContent = String(+d.slice(8));
     hDay.cells.appendChild(s);
   }
-  hMonth.name.textContent = "案件 / 工程 / 作業";
+  hMonth.name.textContent = "長期目標 / 案件 / 工程 / 作業";
   head.appendChild(hMonth.row); head.appendChild(hWeek.row); head.appendChild(hDay.row);
   grid.appendChild(head);
 
@@ -2050,7 +2136,8 @@ function renderScheduleView() {
     const s = schedDiff(from, p.start), e = schedDiff(from, p.end);
     if (e < 0 || s >= days) return;
     const cs = Math.max(0, s), ce = Math.min(days - 1, e);
-    const b = el("div", "s-bar-" + it.kind);
+    const isGoal = it.kind === "goal";
+    const b = el("div", "s-bar-" + it.kind + (isGoal ? " gs-" + schedGoalStatus(it) : ""));
     schedBarEls.set(it.id, b);
     if (!ro) schedWireBar(b, it, s, e);
     if (it.kind === "milestone") {
@@ -2066,7 +2153,13 @@ function renderScheduleView() {
     if (it.kind === "task") {
       const t = el("span", "s-bt"); t.textContent = it.title || ""; b.appendChild(t);
     }
-    if (e <= days - 1 && schedIsOverrun(p, links)) {
+    if (isGoal) {
+      const t = el("span", "s-bt"); t.textContent = it.title || ""; b.appendChild(t);
+      // 終了日が表示範囲の外なら、旗は出さない（端が見えないため）
+      if (e <= days - 1) { const f = el("i", "s-bg-flag"); f.textContent = "⚑"; b.appendChild(f); }
+    }
+    // 長期目標は期間が目安なので、期限超えの赤表示は出さない
+    if (!isGoal && e <= days - 1 && schedIsOverrun(p, links)) {
       const o = el("i", "s-over");
       o.title = "終了日を過ぎても目標が持ち越し中です";
       b.appendChild(o);
@@ -2143,6 +2236,11 @@ function renderScheduleView() {
       t.textContent = (it.kind === "milestone" ? "◆ " : "") + (it.title || "（無題）"); t.title = t.textContent;
       editable(t, it);
       r.name.appendChild(t);
+      if (it.kind === "goal" && schedGoalStatus(it) !== "running") {
+        const st = el("span", "s-gst " + schedGoalStatus(it));
+        st.textContent = SCHED_GOAL_STATUS_JA[schedGoalStatus(it)] || schedGoalStatus(it);
+        r.name.appendChild(st);
+      }
       const asg = asArray(it.assignees).map(memberById).filter(Boolean);
       if (asg.length) {
         const w = el("span", "s-asg");
@@ -2157,6 +2255,19 @@ function renderScheduleView() {
     wireCells(r.cells, it);
     return r.row;
   };
+
+  // 長期目標グループ（案件より上）。無くても、編集できるときは追加ボタン付きの見出しを出す
+  const goalNodes = schedGoalNodes();
+  if (goalNodes.length || !ro) {
+    const r = mkRow("s-proj-row");
+    const nm = el("span", "s-title strong");
+    nm.textContent = "長期目標";
+    r.name.appendChild(nm);
+    addBtn(r.name, "長期目標を追加", () => openSchedDrawer(null, { kind: "goal" }));
+    addToday(r.cells);
+    grid.appendChild(r.row);
+    for (const n of goalNodes) grid.appendChild(itemRow(n, 1));
+  }
 
   for (const g of groups) {
     const r = mkRow("s-proj-row");
@@ -2404,7 +2515,7 @@ function schedMakeGoal(item, weekId) {
   const t = title.trim();
   if (!t) { toast("目標名を入力してください"); return; }
   if (!bridge) { toast("プレビューでは保存されません"); return; }
-  send({ type: "createGoal", weekId: weekId, title: t, scheduleId: item.id, viewWeekId: state.week.id });
+  send({ type: "createGoal", weekId: weekId, title: t, scheduleIds: [item.id], viewWeekId: state.week.id });
   schedRequestLinks();
 }
 
@@ -2422,16 +2533,23 @@ function openSchedDrawer(item, preset) {
   if (state.readOnly) { toast("共有フォルダに書き込めないため、閲覧のみです"); return; }
   schedEditingId = item ? item.id : null;
   const p = preset || {};
+  const newStart = p.start || schedToday();
   const t = item || {
     kind: p.kind || "task", projectId: p.projectId || null, parentId: p.parentId || null,
-    title: "", start: p.start || schedToday(), end: p.start || schedToday(), assignees: [], history: [],
+    title: "", start: newStart,
+    // 長期目標の期間は数か月が目安なので、初期値は約3か月後にしておく
+    end: p.kind === "goal" ? schedAddDays(newStart, 90) : newStart,
+    assignees: [], history: [],
   };
+  const isGoal = t.kind === "goal";
   const hasKids = !!item && item.kind === "phase" && schedKids(item.id).length > 0;
-  document.getElementById("sdTitleH").textContent = item ? "予定を編集" : "予定を追加";
+  document.getElementById("sdTitleH").textContent = (isGoal ? "長期目標を" : "予定を") + (item ? "編集" : "追加");
   document.getElementById("sdSave").textContent = item ? "保存" : "作成";
   document.getElementById("sdDelete").hidden = !item;
-  fillSelect("sdKind", SCHED_KINDS, t.kind);
-  document.getElementById("sdKind").disabled = hasKids;   // 子を持つ工程は種類を変えられない
+  // 長期目標と予定は種類を行き来できない。長期目標は種類欄を固定表示にし、予定側の選択肢には出さない
+  fillSelect("sdKind", isGoal ? [{ value: "goal", label: "長期目標" }] : SCHED_KINDS, t.kind);
+  document.getElementById("sdKind").disabled = isGoal || hasKids;   // 子を持つ工程は種類を変えられない
+  document.getElementById("sdStatus").value = t.status || "running";
   document.getElementById("sdTitle").value = t.title || "";
 
   const projOpts = [{ value: "", label: "（案件なし）" }];
@@ -2479,6 +2597,9 @@ function refreshSchedForm() {
   fillSelect("sdParent", opts, opts.some((o) => o.value === want) ? want : "");
   parentSel.dataset.want = "";
   document.getElementById("sdParentWrap").hidden = kind === "phase";
+  // 長期目標は案件・親工程を持たず、代わりに状態を持つ
+  document.getElementById("sdProjRow").hidden = kind === "goal";
+  document.getElementById("sdStatusWrap").hidden = kind !== "goal";
   document.getElementById("sdEndWrap").hidden = kind === "milestone";
   document.getElementById("sdStartK").textContent = kind === "milestone" ? "日付" : "開始日";
 }
@@ -2498,15 +2619,16 @@ function saveSchedDrawer() {
   const end = kind === "milestone" ? start : document.getElementById("sdEnd").value;
   if (!start || !end) { toast("日付を入力してください"); return; }
   if (end < start) { toast("終了日は開始日以降にしてください"); return; }
-  const parentId = kind === "phase" ? null : (document.getElementById("sdParent").value || null);
+  const parentId = kind === "phase" || kind === "goal" ? null : (document.getElementById("sdParent").value || null);
   const parent = parentId ? schedById(parentId) : null;
   const fields = {
     kind: kind, title: title,
-    projectId: parent ? (parent.projectId || null) : (document.getElementById("sdProject").value || null),
+    projectId: kind === "goal" ? null : parent ? (parent.projectId || null) : (document.getElementById("sdProject").value || null),
     parentId: parentId,
     assignees: Array.from(document.querySelectorAll("#sdAssignees .pick.on")).map((b) => b.dataset.memberId),
     start: start, end: end,
   };
+  if (kind === "goal") fields.status = document.getElementById("sdStatus").value;
   if (!bridge) { toast("プレビューでは保存されません"); closeSchedDrawer(); return; }
   if (item) send({ type: "updateScheduleItem", itemId: item.id, fields: fields });
   else send({ type: "createScheduleItem", fields: fields });
@@ -2601,7 +2723,7 @@ function buildStandaloneState() {
   const week = {
     id: "2026-W30", range: { start: "2026-07-20", end: "2026-07-26" }, closed: false,
     goals: [
-      { id: "gA", key: "A", title: "B社 要件定義を確定させる", status: "running", carriedFrom: null, carryStreak: 0 },
+      { id: "gA", key: "A", title: "B社 要件定義を確定させる", status: "running", carriedFrom: null, carryStreak: 0, scheduleIds: ["sc-g1", "sc-5"] },
       { id: "gB", key: "B", title: "A社 更新契約の書類を揃える", status: "running", carriedFrom: "2026-W29", carryStreak: 1 },
       { id: "gC", key: "C", title: "月次締め作業を金曜までに終わらせる", status: "running", carriedFrom: null, carryStreak: 0 },
     ],
@@ -2621,6 +2743,7 @@ function buildStandaloneState() {
     ],
   };
   const schedule = { items: [
+    { id: "sc-g1", kind: "goal", projectId: null, parentId: null, title: "業務フローの改善", start: "2026-07-01", end: "2026-10-30", assignees: [], history: [], status: "running" },
     { id: "sc-1", kind: "phase", projectId: "p-a", parentId: null, title: "設計工程", start: "2026-07-13", end: "2026-07-31", assignees: [], history: [] },
     { id: "sc-2", kind: "task", projectId: "p-a", parentId: "sc-1", title: "画面設計", start: "2026-07-13", end: "2026-07-24", assignees: ["m1"], history: [] },
     { id: "sc-3", kind: "task", projectId: "p-a", parentId: "sc-1", title: "帳票設計", start: "2026-07-20", end: "2026-08-07", assignees: ["m2"], history: [] },

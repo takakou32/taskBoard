@@ -318,8 +318,10 @@ function Remove-Task {
 
 # ---- 目標の操作 ------------------------------------------------------------
 function Add-Goal {
-    param([string]$Root, [string]$WeekId, [string]$Title, [string]$Actor = 'unknown', [string]$ScheduleId = '')
+    param([string]$Root, [string]$WeekId, [string]$Title, [string]$Actor = 'unknown', $ScheduleIds = @(), [string]$ScheduleId = '')
     if ([string]::IsNullOrWhiteSpace($Title)) { throw "目標のタイトルを入力してください。" }
+    # 旧形式の単数 ScheduleId も配列に混ぜる（重複は除く）
+    $sids = ConvertTo-StringArray (@($ScheduleIds) + @($ScheduleId))
     # 週ファイルが無ければ作る（スケジュール画面から未来の週へ目標を作る場合）
     Get-OrCreateWeek $Root $WeekId | Out-Null
     Invoke-WithLock -Root $Root -LockName $WeekId -Action {
@@ -334,7 +336,7 @@ function Add-Goal {
         $goal = [ordered]@{
             id = New-Id 'g'; key = $key; title = $Title.Trim(); status = 'running'
             carriedFrom = $null; carryStreak = 0
-            scheduleId = $(if ([string]::IsNullOrWhiteSpace($ScheduleId)) { $null } else { $ScheduleId })
+            scheduleIds = @($sids)
         }
         $week.goals = @($week.goals) + $goal
         Write-JsonFile $path $week
@@ -361,10 +363,18 @@ function Update-Goal {
             if ($s -notin @('running','achieved','carried')) { throw "不正な目標ステータス: $s" }
             $goal.status = $s
         }
-        if (Test-HasField $Fields 'scheduleId') {
-            $sid = if ([string]::IsNullOrWhiteSpace([string]$Fields.scheduleId)) { $null } else { [string]$Fields.scheduleId }
-            if (Test-HasField $goal 'scheduleId') { $goal.scheduleId = $sid }
-            else { $goal | Add-Member -NotePropertyName scheduleId -NotePropertyValue $sid -Force }
+        if ((Test-HasField $Fields 'scheduleIds') -or (Test-HasField $Fields 'scheduleId')) {
+            # 紐づけは丸ごと差し替える。旧 scheduleId だけ渡された場合は1件の配列として扱う
+            $raw = if (Test-HasField $Fields 'scheduleIds') { $Fields.scheduleIds } else { $Fields.scheduleId }
+            $sids = ConvertTo-StringArray $raw
+            if ($goal -is [System.Collections.IDictionary]) {
+                $goal['scheduleIds'] = @($sids)
+                if ($goal.Contains('scheduleId')) { $goal.Remove('scheduleId') }
+            } else {
+                $goal | Add-Member -NotePropertyName scheduleIds -NotePropertyValue @($sids) -Force
+                # 旧形式の単数フィールドは消す（読み取り側は scheduleIds を優先するが、混乱を避ける）
+                [void]$goal.PSObject.Properties.Remove('scheduleId')
+            }
         }
         Write-JsonFile $path $week
     }
@@ -834,7 +844,14 @@ function ConvertTo-StringArray {
 # $Items は全項目、$SelfId は更新時の自分のID。子があるかは $Items から判定する。
 function Test-ScheduleValues {
     param($Vals, $Items, [string]$SelfId)
-    if ($Vals.kind -notin @('phase','task','milestone')) { throw "不正な種類です: $($Vals.kind)" }
+    if ($Vals.kind -notin @('phase','task','milestone','goal')) { throw "不正な種類です: $($Vals.kind)" }
+    # 長期目標と予定は性質が違う（案件・親を持たず状態を持つ）ので、相互の変更は認めない
+    if ($SelfId) {
+        $self = $Items | Where-Object { $_.id -eq $SelfId } | Select-Object -First 1
+        if ($self -and (($self.kind -eq 'goal') -ne ($Vals.kind -eq 'goal'))) {
+            throw "長期目標と予定の間では種類を変更できません。"
+        }
+    }
     if ([string]::IsNullOrWhiteSpace([string]$Vals.title)) { throw "タイトルを入力してください。" }
     $Vals.title = ([string]$Vals.title).Trim()
     $Vals.start = ConvertTo-ScheduleDate $Vals.start '開始日'
@@ -847,7 +864,14 @@ function Test-ScheduleValues {
     if ([string]::IsNullOrWhiteSpace([string]$Vals.projectId)) { $Vals.projectId = $null } else { $Vals.projectId = [string]$Vals.projectId }
     if ([string]::IsNullOrWhiteSpace([string]$Vals.parentId))  { $Vals.parentId  = $null } else { $Vals.parentId  = [string]$Vals.parentId }
 
-    if ($Vals.kind -eq 'phase') {
+    if ($Vals.kind -eq 'goal') {
+        # 長期目標は案件にも工程にも属さない。状態は人が付ける
+        $Vals.projectId = $null
+        $Vals.parentId = $null
+        if (-not $Vals.ContainsKey('status') -or [string]::IsNullOrWhiteSpace([string]$Vals.status)) { $Vals.status = 'running' }
+        $Vals.status = [string]$Vals.status
+        if ($Vals.status -notin @('running','achieved','missed','dropped')) { throw "不正な状態です: $($Vals.status)" }
+    } elseif ($Vals.kind -eq 'phase') {
         if ($Vals.parentId) { throw "工程の下に工程は置けません。" }
     } elseif ($Vals.parentId) {
         if ($Vals.parentId -eq $SelfId) { throw "自分自身を親にはできません。" }
@@ -875,6 +899,7 @@ function Add-ScheduleItem {
             start     = Get-FieldOrDefault $Fields 'start' ''
             end       = Get-FieldOrDefault $Fields 'end' ''
             assignees = Get-FieldOrDefault $Fields 'assignees' @()
+            status    = Get-FieldOrDefault $Fields 'status' 'running'
         }
         if ($vals.kind -eq 'milestone' -and -not $vals.end) { $vals.end = $vals.start }
         Test-ScheduleValues -Vals $vals -Items $sched.items -SelfId ''
@@ -883,6 +908,7 @@ function Add-ScheduleItem {
             title = $vals.title; start = $vals.start; end = $vals.end
             assignees = $vals.assignees; history = @()
         }
+        if ($vals.kind -eq 'goal') { $item['status'] = $vals.status }
         Add-ItemHistory -Item $item -Text ("{0}: 作成" -f $Actor)
         $sched.items = @($sched.items) + $item
         Write-JsonFile (Get-SchedulePath $Root) ([ordered]@{ schemaVersion = 1; items = @($sched.items) })
@@ -898,7 +924,7 @@ function Update-ScheduleItem {
         if (-not $item) { throw "スケジュール項目が見つかりません: $ItemId" }
         $oldProject = $item.projectId
         $vals = @{}
-        foreach ($k in @('kind','projectId','parentId','title','start','end','assignees')) {
+        foreach ($k in @('kind','projectId','parentId','title','start','end','assignees','status')) {
             $vals[$k] = if (Test-HasField $Fields $k) { $Fields.$k } else { Get-FieldOrDefault $item $k $null }
         }
         $vals.kind = [string]$vals.kind
@@ -913,6 +939,14 @@ function Update-ScheduleItem {
         $oldAs = (@(Get-FieldOrDefault $item 'assignees' @()) -join ',')
         if ($oldAs -ne (@($vals.assignees) -join ',')) { $changed += 'assignees' }
 
+        if ($item.kind -eq 'goal' -or $vals.kind -eq 'goal') {
+            $oldSt = [string](Get-FieldOrDefault $item 'status' 'running')
+            if ($oldSt -ne [string]$vals.status) {
+                Add-ItemHistory -Item $item -Text ("{0}: 状態を変更（{1} → {2}）" -f $Actor, $oldSt, $vals.status)
+            }
+            if (Test-HasField $item 'status') { $item.status = $vals.status }
+            else { $item | Add-Member -NotePropertyName status -NotePropertyValue $vals.status -Force }
+        }
         foreach ($k in @('kind','projectId','parentId','title','start','end')) { $item.$k = $vals[$k] }
         $item.assignees = @($vals.assignees)
 
@@ -979,7 +1013,17 @@ function Remove-ScheduleItem {
     }
 }
 
-# 全週を走査し、スケジュール項目に結びついた目標を返す。
+# 週の目標が紐づけているスケジュール項目IDの配列。
+# scheduleIds が無く旧形式の scheduleId だけある目標は、その1件とみなす。
+function Get-GoalScheduleIds {
+    param($Goal)
+    # ConvertTo-StringArray は既に配列を包んで返すので、ここで @() を重ねると入れ子になる
+    if (Test-HasField $Goal 'scheduleIds') { $ids = ConvertTo-StringArray $Goal.scheduleIds }
+    else { $ids = ConvertTo-StringArray (Get-FieldOrDefault $Goal 'scheduleId' $null) }
+    return ,$ids
+}
+
+# 全週を走査し、スケジュール項目（長期目標を含む）に結びついた目標を返す。
 function Get-ScheduleLinks {
     param([string]$Root)
     $out = @()
@@ -987,11 +1031,13 @@ function Get-ScheduleLinks {
         $week = Get-Week $Root $w.id
         if (-not $week) { continue }
         foreach ($g in @($week.goals)) {
-            $sid = Get-FieldOrDefault $g 'scheduleId' $null
-            if ([string]::IsNullOrWhiteSpace([string]$sid)) { continue }
-            $out += [ordered]@{
-                weekId = $w.id; goalId = $g.id; key = $g.key; title = $g.title
-                status = $g.status; scheduleId = [string]$sid
+            # 紐づけ先ごとに1件。UI は scheduleId 単位で集計する
+            $sids = Get-GoalScheduleIds $g
+            foreach ($sid in $sids) {
+                $out += [ordered]@{
+                    weekId = $w.id; goalId = $g.id; key = $g.key; title = $g.title
+                    status = $g.status; scheduleId = [string]$sid
+                }
             }
         }
     }
@@ -1138,10 +1184,12 @@ function Close-Week {
             $goalIdMap[$g.id] = $newGoalId
             $streak = 1
             if ($g.PSObject.Properties.Name -contains 'carryStreak' -and $g.carryStreak) { $streak = [int]$g.carryStreak + 1 }
+            # 紐づけ（長期目標・予定とも）は全部引き継ぐ。旧形式の scheduleId は配列に直す
+            $carrySids = Get-GoalScheduleIds $g
             [void]$nextGoals.Add([ordered]@{
                 id = $newGoalId; key = $g.key; title = $g.title; status = 'running'
                 carriedFrom = $WeekId; carryStreak = $streak
-                scheduleId = (Get-FieldOrDefault $g 'scheduleId' $null)
+                scheduleIds = $carrySids
             })
         }
 
