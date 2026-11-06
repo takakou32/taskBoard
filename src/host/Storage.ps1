@@ -1083,16 +1083,17 @@ function Get-ScheduleLinks {
 
 # ---- 工数と進捗率 ----------------------------------------------------------
 # 工数を集計するのは「イベント」（工程・作業・マイルストーン）だけ。長期目標は対象外。
-# 進捗率は手入力しない。子タスクがあれば 済み/全体、無ければ 完了=100% それ以外=0%。
+# 進捗率は手入力しない。完了=100%（子タスク不問）、それ以外は子タスクがあれば 済み/全体、無ければ 0%。
 # （UI の taskProgress / taskEventId と同じ規則。変えるときは両方そろえること）
 function Get-TaskProgress {
     param($Task)
+    # 完了は子タスクに関係なく 100%（完了は持ち越されないので、チェック漏れで工数が消えないように）
+    if ($Task.status -eq 'done') { return 1.0 }
     $subs = @(@(Get-FieldOrDefault $Task 'subtasks' @()) | Where-Object { $null -ne $_ })
     if ($subs.Count) {
         $done = @($subs | Where-Object { $_.done }).Count
         return ([double]$done / $subs.Count)
     }
-    if ($Task.status -eq 'done') { return 1.0 }
     return 0.0
 }
 

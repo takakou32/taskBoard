@@ -368,7 +368,7 @@ function goalScheduleIds(g) {
 }
 /* ---- 工数と進捗率（ホスト Storage.ps1 の Get-TaskProgress / Get-TaskEventId と同じ規則） ----
    工数を集計するのは「イベント」（工程・作業・マイルストーン）だけ。長期目標は工数を管理しない。
-   進捗率は手入力せず、子タスクがあれば 済み/全体、無ければ 完了=100% それ以外=0%。 */
+   進捗率は手入力せず、完了=100%（子タスク不問）、それ以外は子タスクがあれば 済み/全体、無ければ 0%。 */
 function round1(x) { return Math.round(x * 10) / 10; }
 function fmtHours(h) { return String(round1(Number(h))); }
 function hoursPerDay() {
@@ -383,9 +383,9 @@ function subCounts(subs) {
   return { done: list.filter((s) => s && s.done).length, total: list.length };
 }
 function progressOf(subs, status) {
+  if (status === "done") return 1;   // 完了は子タスク不問（持ち越されないので工数が消えないように）
   const c = subCounts(subs);
-  if (c.total) return c.done / c.total;
-  return status === "done" ? 1 : 0;
+  return c.total ? c.done / c.total : 0;
 }
 function taskProgress(t) { return progressOf(t.subtasks, t.status); }
 // 目標の候補イベント（紐づけ先のうち、存在する非 goal の予定）のID
