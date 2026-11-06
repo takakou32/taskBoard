@@ -101,12 +101,23 @@
           </select>
         </label>
       </div>
+      <div class="field-row">
+        <label class="field">
+          <span class="k">工数（h）</span>
+          <input type="number" id="fHours" min="0" step="0.5" placeholder="例: 4">
+        </label>
+        <label class="field" id="fEventWrap" hidden>
+          <span class="k">イベント</span>
+          <select id="fEvent"></select>
+        </label>
+      </div>
+      <p class="hint" id="fProgress"></p>
       <div class="field">
         <span class="k">担当</span>
         <div class="picker" id="fAssignees"></div>
       </div>
       <div class="field">
-        <span class="k">子タスク <span id="fSubCount"></span></span>
+        <span class="k">子タスク<span id="fSubCount"></span></span>
         <div class="subs" id="fSubs"></div>
         <div class="addrow">
           <input id="fSubNew" placeholder="手順を追加（Enter）">
@@ -209,6 +220,10 @@
           <input type="date" id="sdEnd">
         </label>
       </div>
+      <label class="field" id="sdEstimateWrap">
+        <span class="k">見積（人日）</span>
+        <input type="number" id="sdEstimate" min="0" step="0.5" placeholder="例: 3">
+      </label>
       <div class="field">
         <span class="k">担当</span>
         <div class="picker" id="sdAssignees"></div>
@@ -256,6 +271,18 @@
       <button class="btn icon" id="setClose" title="閉じる">✕</button>
     </div>
     <div class="drawer-b">
+      <div class="sec">
+        <div class="sec-h">工数</div>
+        <p class="hint">予定の見積は人日、タスクの工数は時間で入力します。人日への換算に使う時間数です。</p>
+        <div class="field">
+          <span class="k">1人日の時間数</span>
+          <div class="addrow">
+            <input type="number" id="hoursPerDay" min="0.5" max="24" step="0.5">
+            <button class="btn primary" id="hoursPerDaySave">保存</button>
+          </div>
+        </div>
+      </div>
+
       <div class="sec">
         <div class="sec-h">メンバー</div>
         <p class="hint">チームから外れた人は、削除より<b>休止</b>をお勧めします。休止すると新しい割り当ての候補から外れますが、過去の担当記録は残ります。</p>

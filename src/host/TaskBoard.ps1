@@ -398,7 +398,9 @@ function Invoke-UiMessage {
             }
             'getScheduleLinks' {
                 $links = Get-ScheduleLinks -Root $DataRoot
-                Send-ToUi @{ type = 'scheduleLinks'; links = @($links) }
+                # effort は第3段階（ガントの実績/見積）用。今は UI が保持するだけ
+                $effort = Get-ScheduleEffort -Root $DataRoot
+                Send-ToUi @{ type = 'scheduleLinks'; links = @($links); effort = @($effort) }
             }
             'createContinuingGoal' {
                 Add-ContinuingGoal -Root $DataRoot -Title $msg.title -Actor $Actor | Out-Null
@@ -456,6 +458,11 @@ function Invoke-UiMessage {
                 $n = Remove-BoardMember -Root $DataRoot -MemberId $msg.memberId -Actor $Actor
                 Send-State $script:CurrentWeekId
                 Send-Toast $(if ($n) { "メンバーを削除しました（タスク $n 件の担当を解除）" } else { "メンバーを削除しました" })
+            }
+            'updateSettings' {
+                Update-BoardSettings -Root $DataRoot -Fields $msg.fields -Actor $Actor
+                Send-State $script:CurrentWeekId
+                Send-Toast "設定を保存しました"
             }
             'createProject' {
                 Add-Project -Root $DataRoot -Name $msg.name -Actor $Actor | Out-Null

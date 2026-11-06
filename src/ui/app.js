@@ -72,6 +72,7 @@ function handleHostMessage(msg) {
     }
     case "scheduleLinks":
       schedLinks = asArray(msg.links);
+      schedEffort = asArray(msg.effort);   // 第3段階（ガントの実績/見積）用。今は保持するだけ
       if (state && state.view === "schedule") render();
       break;
     case "retro":
@@ -138,6 +139,8 @@ function wireToolbar() {
   document.getElementById("btnSave").onclick = saveDrawer;
   document.getElementById("btnDelete").onclick = guard("削除", deleteDrawer);
   document.getElementById("btnDuplicate").onclick = guard("複製", duplicateDrawer);
+  document.getElementById("fGoal").onchange = () => refreshEventField();
+  document.getElementById("fStatus").onchange = updateProgressHint;
   document.getElementById("fSubAdd").onclick = addSub;
   document.getElementById("fSubNew").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); addSub(); }
@@ -159,6 +162,10 @@ function wireToolbar() {
   document.getElementById("btnSettings").onclick = openSettings;
   document.getElementById("setClose").onclick = closeSettings;
   document.getElementById("setDone").onclick = closeSettings;
+  document.getElementById("hoursPerDaySave").onclick = saveHoursPerDay;
+  document.getElementById("hoursPerDay").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); saveHoursPerDay(); }
+  });
   document.getElementById("memberAdd").onclick = addMember;
   document.getElementById("projectAdd").onclick = addProject;
   document.getElementById("memberNew").addEventListener("keydown", (e) => {
@@ -359,6 +366,52 @@ function goalScheduleIds(g) {
   if (g.scheduleIds !== undefined && g.scheduleIds !== null) return asArray(g.scheduleIds).filter(Boolean);
   return g.scheduleId ? [g.scheduleId] : [];
 }
+/* ---- 工数と進捗率（ホスト Storage.ps1 の Get-TaskProgress / Get-TaskEventId と同じ規則） ----
+   工数を集計するのは「イベント」（工程・作業・マイルストーン）だけ。長期目標は工数を管理しない。
+   進捗率は手入力せず、子タスクがあれば 済み/全体、無ければ 完了=100% それ以外=0%。 */
+function round1(x) { return Math.round(x * 10) / 10; }
+function fmtHours(h) { return String(round1(Number(h))); }
+function hoursPerDay() {
+  const s = state && state.board && state.board.settings;
+  const h = s ? Number(s.hoursPerDay) : NaN;
+  return h > 0 ? h : 8;
+}
+function hasHours(t) { return t.hours !== null && t.hours !== undefined && t.hours !== "" && isFinite(Number(t.hours)); }
+// 子タスクの数。progressOf と画面表示で同じ数え方を使う
+function subCounts(subs) {
+  const list = asArray(subs);
+  return { done: list.filter((s) => s && s.done).length, total: list.length };
+}
+function progressOf(subs, status) {
+  const c = subCounts(subs);
+  if (c.total) return c.done / c.total;
+  return status === "done" ? 1 : 0;
+}
+function taskProgress(t) { return progressOf(t.subtasks, t.status); }
+// 目標の候補イベント（紐づけ先のうち、存在する非 goal の予定）のID
+function eventCandidates(goalId) {
+  if (!goalId) return [];
+  const g = asArray(state.week.goals).find((x) => x.id === goalId);
+  if (!g) return [];
+  return goalScheduleIds(g).filter((id) => { const it = schedById(id); return it && it.kind !== "goal"; });
+}
+// タスクが属するイベントのID。無ければ null（イベント外）。
+// task.scheduleId が候補ならそれ、候補がちょうど1件ならそれ、それ以外はイベント外
+function taskEventId(t) {
+  const c = eventCandidates(t.goalId);
+  if (t.scheduleId && c.includes(t.scheduleId)) return t.scheduleId;
+  return c.length === 1 ? c[0] : null;
+}
+// 候補が複数あるのに選ばれていない（イベント外になっている）か
+function taskEventUnselected(t) {
+  return eventCandidates(t.goalId).length >= 2 && taskEventId(t) === null;
+}
+// イベントの表示名（「工程 › 作業」。親の工程が無ければタイトルだけ）
+function eventLabel(it) {
+  const par = it.parentId ? schedById(it.parentId) : null;
+  return (par && par.kind === "phase" ? par.title + " › " : "") + it.title;
+}
+
 // 紐づけ先の表示名（長期目標は 🎯、予定は 📅 ＋ 工程 › 作業）
 function schedLinkLabel(sc) {
   if (sc.kind === "goal") return "🎯 " + sc.title;
@@ -521,6 +574,12 @@ function renderCard(t) {
     sc.textContent = "☑ " + doneN + "/" + subs.length;
     sc.title = "子タスク " + subs.length + " 件中 " + doneN + " 件済み";
     meta.appendChild(sc);
+  }
+  if (hasHours(t)) {
+    const hr = el("span", "hrs");
+    hr.textContent = fmtHours(t.hours) + "h";
+    hr.title = "工数 " + fmtHours(t.hours) + " 時間";
+    meta.appendChild(hr);
   }
   meta.appendChild(el("span", "sp"));
   for (const id of asArray(t.assignees)) {
@@ -847,7 +906,7 @@ function openDrawer(task) {
   const t = task || {
     title: "", status: "todo", goalId: null, continuingGoalId: null,
     assignees: [], due: state.week.range.end, priority: "normal",
-    projectId: null, description: "", subtasks: [], history: [],
+    projectId: null, description: "", subtasks: [], hours: null, scheduleId: null, history: [],
   };
 
   document.getElementById("drawerTitle").textContent = task ? "タスクを編集" : "新規タスク";
@@ -866,6 +925,7 @@ function openDrawer(task) {
   document.getElementById("fPriority").value = t.priority || "normal";
 
   fillSelect("fStatus", STATUSES.map((s) => ({ value: s.key, label: s.label })), t.status);
+  updateProgressHint();   // 子タスクの描画時点では状態が未設定なので、ここで改めて出す
 
   // 目標: 週の大目標 → 継続目標 → 紐づけなし
   const goalOpts = [{ value: "", label: "（紐づけなし）" }];
@@ -875,6 +935,8 @@ function openDrawer(task) {
   }
   const goalVal = t.goalId ? "g:" + t.goalId : t.continuingGoalId ? "c:" + t.continuingGoalId : "";
   fillSelect("fGoal", goalOpts, goalVal);
+  document.getElementById("fHours").value = hasHours(t) ? t.hours : "";
+  refreshEventField(t.scheduleId || "");
 
   // 休止中の案件は選択肢から外すが、既に紐づいているものは残す（勝手に外さない）
   const projOpts = [{ value: "", label: "（なし）" }];
@@ -909,6 +971,32 @@ function openDrawer(task) {
   document.getElementById("fTitle").focus();
 }
 
+// 選んだ目標の候補イベントが2件以上のときだけ「イベント」欄を出す。
+// 1件なら自動で決まり、0件ならイベント外なので、どちらも欄は出さない。
+function refreshEventField(want) {
+  const goalRaw = document.getElementById("fGoal").value;
+  const cands = goalRaw.startsWith("g:") ? eventCandidates(goalRaw.slice(2)) : [];
+  const wrap = document.getElementById("fEventWrap");
+  wrap.hidden = cands.length < 2;
+  if (cands.length >= 2) {
+    const sel = document.getElementById("fEvent");
+    const keep = want !== undefined ? want : sel.value;
+    const opts = [{ value: "", label: "（未選択）" }];
+    for (const id of cands) { const it = schedById(id); opts.push({ value: id, label: eventLabel(it) }); }
+    fillSelect("fEvent", opts, cands.includes(keep) ? keep : "");
+  }
+}
+
+// 進捗率は子タスクから自動計算した値を読み取り専用で見せる
+function updateProgressHint() {
+  const subs = drawerSubs.filter((s) => s.title.trim());
+  const status = document.getElementById("fStatus").value;
+  const c = subCounts(subs);
+  const pct = Math.round(progressOf(subs, status) * 100);
+  document.getElementById("fProgress").textContent = "進捗 " + pct + "%"
+    + (c.total ? "（子タスク " + c.done + "/" + c.total + "）" : "（子タスクなし。完了で 100%）");
+}
+
 function closeDrawer() {
   if (editingId && bridge) send({ type: "unlockTask", weekId: state.week.id, taskId: editingId });
   document.getElementById("scrim").hidden = true;
@@ -919,6 +1007,7 @@ function closeDrawer() {
 function collectForm() {
   const goalRaw = document.getElementById("fGoal").value;
   const assignees = Array.from(document.querySelectorAll("#fAssignees .pick.on")).map((b) => b.dataset.memberId);
+  const hoursRaw = document.getElementById("fHours").value.trim();
   return {
     title: document.getElementById("fTitle").value.trim(),
     description: document.getElementById("fDesc").value,
@@ -930,6 +1019,9 @@ function collectForm() {
     continuingGoalId: goalRaw.startsWith("c:") ? goalRaw.slice(2) : null,
     assignees: assignees,
     subtasks: normSubs(drawerSubs),
+    hours: hoursRaw === "" ? null : Number(hoursRaw),
+    // 欄が出ていないとき（候補が1件以下）は自動で決まるので保存しない
+    scheduleId: document.getElementById("fEventWrap").hidden ? null : (document.getElementById("fEvent").value || null),
   };
 }
 
@@ -969,6 +1061,7 @@ function updateSubCount() {
   const n = drawerSubs.length;
   document.getElementById("fSubCount").textContent =
     n ? drawerSubs.filter((s) => s.done).length + "/" + n : "";
+  updateProgressHint();
 }
 
 function addSub() {
@@ -986,6 +1079,9 @@ function saveDrawer() {
   if (document.getElementById("fSubNew").value.trim()) addSub();
   const fields = collectForm();
   if (!fields.title) { toast("タイトルを入力してください"); document.getElementById("fTitle").focus(); return; }
+  if (fields.hours !== null && (!isFinite(fields.hours) || fields.hours < 0)) {
+    toast("工数は 0 以上の数値で入力してください"); document.getElementById("fHours").focus(); return;
+  }
   if (!bridge) { toast("プレビューでは保存されません"); closeDrawer(); return; }
   if (editingId) send({ type: "updateTask", weekId: state.week.id, taskId: editingId, fields });
   else send({ type: "createTask", weekId: state.week.id, fields });
@@ -1019,6 +1115,9 @@ function currentFormOf(t) {
     continuingGoalId: t.continuingGoalId || null,
     assignees: asArray(t.assignees),
     subtasks: normSubs(t.subtasks),
+    hours: hasHours(t) ? Number(t.hours) : null,
+    // イベント欄が出る（候補2件以上）ときだけ保存値を持つ。collectForm と同じ形にそろえる
+    scheduleId: eventCandidates(t.goalId).length >= 2 && eventCandidates(t.goalId).includes(t.scheduleId) ? t.scheduleId : null,
   };
 }
 
@@ -1444,6 +1543,8 @@ function openSettings() {
   renderSettings();
   document.getElementById("memberNew").value = "";
   document.getElementById("projectNew").value = "";
+  // 入力中に更新が届いても上書きしないよう、開くときにだけ現在値を入れる
+  document.getElementById("hoursPerDay").value = hoursPerDay();
   document.getElementById("scrim").hidden = false;
   document.getElementById("setDrawer").hidden = false;
 }
@@ -1603,6 +1704,16 @@ function renderProjectList() {
     row.appendChild(del);
     return row;
   }));
+}
+
+function saveHoursPerDay() {
+  const input = document.getElementById("hoursPerDay");
+  const v = Number(input.value);
+  if (input.value.trim() === "" || !isFinite(v) || v <= 0 || v > 24) {
+    toast("1人日の時間数は 0 より大きく 24 以下の数値で入力してください"); input.focus(); return;
+  }
+  if (!bridge) { toast("プレビューでは保存されません"); return; }
+  send({ type: "updateSettings", fields: { hoursPerDay: v } });
 }
 
 function addMember() {
@@ -1815,9 +1926,49 @@ function openCloseDialog() {
     body.appendChild(row);
   }
 
+  appendEffortSection(body, tasks);
+
   updateCloseSummary();
   document.getElementById("closeScrim").hidden = false;
   document.getElementById("closeModal").hidden = false;
+}
+
+// この週の出来高（進捗率 × 工数）をイベントごとに出す。工数の入ったタスクが無ければ何も出さない。
+// ここには入力欄・チェックボックスを置かない（collectCarryIds が #closeBody の checkbox を拾うため）
+function appendEffortSection(body, tasks) {
+  const withHours = tasks.filter(hasHours);
+  if (!withHours.length) return;
+  const byEvent = new Map();   // イベントID → 出来高の合計（最初に出た順）
+  let outside = 0, outsideN = 0, unselected = 0;
+  for (const t of withHours) {
+    const done = taskProgress(t) * Number(t.hours);
+    const eid = taskEventId(t);
+    if (eid) byEvent.set(eid, (byEvent.get(eid) || 0) + done);
+    else { outside += done; outsideN++; if (taskEventUnselected(t)) unselected++; }
+  }
+  const hpd = hoursPerDay();
+  const days = (h) => round1(h / hpd);
+  const sec = el("div", "effort");
+  const head = el("div", "effort-h");
+  head.textContent = "工数（この週の出来高）";
+  sec.appendChild(head);
+  const note = el("div", "effort-note");
+  note.textContent = "進捗率 × 工数で数えます。持ち越すタスクは、残りの工数が次週に引き継がれます。";
+  sec.appendChild(note);
+  const addRow = (label, h, extra) => {
+    const r = el("div", "effort-row");
+    const a = el("span", "lb"); a.textContent = label;
+    const b = el("span", "v"); b.textContent = fmtHours(h) + "h（" + days(h) + "人日）";
+    r.append(a, b);
+    if (extra) { const c = el("span", "warn"); c.textContent = extra; r.appendChild(c); }
+    sec.appendChild(r);
+  };
+  for (const [eid, h] of byEvent) {
+    const it = schedById(eid);
+    addRow(it ? eventLabel(it) : eid, h);
+  }
+  if (outsideN) addRow("イベント外", outside, unselected ? "（うち振り分け未選択 " + unselected + "件）" : "");
+  body.appendChild(sec);
 }
 
 function carryCheckbox(t, checked) {
@@ -1895,6 +2046,7 @@ const SCHED_KINDS = [
 ];
 let schedStart = null;        // 表示開始日（月曜）。null = 初期位置（今週の月曜の2週前）
 let schedLinks = [];          // scheduleLinks の links
+let schedEffort = [];         // scheduleLinks の effort（[{ weekId, scheduleId, hours, closed }]）
 let schedCollapsed = schedLoadCollapsed();
 let schedMenuEl = null;
 let schedEditingId = null;
@@ -2562,6 +2714,7 @@ function openSchedDrawer(item, preset) {
   document.getElementById("sdParent").dataset.want = t.parentId || "";
   document.getElementById("sdStart").value = t.start || "";
   document.getElementById("sdEnd").value = t.end || t.start || "";
+  document.getElementById("sdEstimate").value = t.estimate === null || t.estimate === undefined ? "" : t.estimate;
 
   const picker = document.getElementById("sdAssignees");
   const selected = new Set(asArray(t.assignees));
@@ -2600,6 +2753,8 @@ function refreshSchedForm() {
   // 長期目標は案件・親工程を持たず、代わりに状態を持つ
   document.getElementById("sdProjRow").hidden = kind === "goal";
   document.getElementById("sdStatusWrap").hidden = kind !== "goal";
+  // 見積は工程と作業だけ。マイルストーンと長期目標は工数を管理しない
+  document.getElementById("sdEstimateWrap").hidden = kind !== "phase" && kind !== "task";
   document.getElementById("sdEndWrap").hidden = kind === "milestone";
   document.getElementById("sdStartK").textContent = kind === "milestone" ? "日付" : "開始日";
 }
@@ -2629,6 +2784,12 @@ function saveSchedDrawer() {
     start: start, end: end,
   };
   if (kind === "goal") fields.status = document.getElementById("sdStatus").value;
+  // 見積は空欄なら null（消す）。種類が変わって欄が隠れた場合もホスト側で null にそろえる
+  const estRaw = document.getElementById("sdEstimate").value.trim();
+  fields.estimate = kind === "phase" || kind === "task" ? (estRaw === "" ? null : Number(estRaw)) : null;
+  if (fields.estimate !== null && (!isFinite(fields.estimate) || fields.estimate < 0)) {
+    toast("見積は 0 以上の数値で入力してください"); document.getElementById("sdEstimate").focus(); return;
+  }
   if (!bridge) { toast("プレビューでは保存されません"); closeSchedDrawer(); return; }
   if (item) send({ type: "updateScheduleItem", itemId: item.id, fields: fields });
   else send({ type: "createScheduleItem", fields: fields });
@@ -2697,6 +2858,7 @@ function setSync(connected, text) {
 function buildStandaloneState() {
   const board = {
     boardName: "開発1課（プレビュー）",
+    settings: { hoursPerDay: 8 },
     members: [
       { id: "m1", name: "田中", initial: "田", color: "#2F6E86" },
       { id: "m2", name: "佐藤", initial: "佐", color: "#8A5A2B" },
@@ -2724,31 +2886,31 @@ function buildStandaloneState() {
     id: "2026-W30", range: { start: "2026-07-20", end: "2026-07-26" }, closed: false,
     goals: [
       { id: "gA", key: "A", title: "B社 要件定義を確定させる", status: "running", carriedFrom: null, carryStreak: 0, scheduleIds: ["sc-g1", "sc-5"] },
-      { id: "gB", key: "B", title: "A社 更新契約の書類を揃える", status: "running", carriedFrom: "2026-W29", carryStreak: 1 },
+      { id: "gB", key: "B", title: "A社 更新契約の書類を揃える", status: "running", carriedFrom: "2026-W29", carryStreak: 1, scheduleIds: ["sc-2", "sc-3"] },
       { id: "gC", key: "C", title: "月次締め作業を金曜までに終わらせる", status: "running", carriedFrom: null, carryStreak: 0 },
     ],
     tasks: [
-      { id: "t1", title: "帳票要件の残論点を洗い出す", status: "todo", goalId: "gA", continuingGoalId: null, assignees: ["m1"], due: "2026-07-24", priority: "high", carriedFrom: null },
-      { id: "t2", title: "保守契約書のドラフト作成", status: "todo", goalId: "gB", continuingGoalId: null, assignees: ["m1"], due: "2026-07-24", priority: "normal", carriedFrom: "2026-W29" },
+      { id: "t1", title: "帳票要件の残論点を洗い出す", status: "todo", goalId: "gA", continuingGoalId: null, assignees: ["m1"], due: "2026-07-24", priority: "high", carriedFrom: null, hours: 4 },
+      { id: "t2", title: "保守契約書のドラフト作成", status: "todo", goalId: "gB", continuingGoalId: null, assignees: ["m1"], due: "2026-07-24", priority: "normal", carriedFrom: "2026-W29", hours: 8, scheduleId: "sc-3" },
       { id: "t3", title: "共有フォルダの権限棚卸し", status: "todo", goalId: null, continuingGoalId: "cg1", assignees: ["m5"], due: "2026-07-24", priority: "normal", carriedFrom: null },
       { id: "t4", title: "備品発注のとりまとめ", status: "todo", goalId: null, continuingGoalId: null, assignees: ["m6"], due: "2026-07-25", priority: "normal", carriedFrom: null },
-      { id: "t5", title: "要件ヒアリング議事録のまとめ", status: "doing", goalId: "gA", continuingGoalId: null, assignees: ["m2"], due: "2026-07-24", priority: "high", carriedFrom: null },
-      { id: "t6", title: "現地調査の日程調整", status: "doing", goalId: "gB", continuingGoalId: null, assignees: ["m6"], due: "2026-07-24", priority: "normal", carriedFrom: null },
+      { id: "t5", title: "要件ヒアリング議事録のまとめ", status: "doing", goalId: "gA", continuingGoalId: null, assignees: ["m2"], due: "2026-07-24", priority: "high", carriedFrom: null, hours: 6, subtasks: [{ id: "s1", title: "録音の聞き直し", done: true }, { id: "s2", title: "論点の整理", done: true }, { id: "s3", title: "ドラフト作成", done: false }, { id: "s4", title: "レビュー依頼", done: false }, { id: "s5", title: "指摘の反映", done: false }] },
+      { id: "t6", title: "現地調査の日程調整", status: "doing", goalId: "gB", continuingGoalId: null, assignees: ["m6"], due: "2026-07-24", priority: "normal", carriedFrom: null, hours: 3 },
       { id: "t7", title: "検証環境の再構築", status: "doing", goalId: null, continuingGoalId: "cg2", assignees: ["m2"], due: "2026-07-25", priority: "normal", carriedFrom: null },
       { id: "t8", title: "構成図 v2 の内容確認", status: "review", goalId: "gA", continuingGoalId: null, assignees: ["m3", "m1"], due: "2026-07-24", priority: "normal", carriedFrom: null },
       { id: "t9", title: "経費精算フローの手順書", status: "review", goalId: null, continuingGoalId: "cg1", assignees: ["m5", "m4"], due: "2026-07-24", priority: "normal", carriedFrom: null },
       { id: "t10", title: "7月度 勤怠の締め確認", status: "done", goalId: "gC", continuingGoalId: null, assignees: ["m4"], due: "2026-07-23", priority: "normal", carriedFrom: null },
-      { id: "t11", title: "前年度実績データの抽出", status: "done", goalId: "gA", continuingGoalId: null, assignees: ["m2"], due: "2026-07-22", priority: "normal", carriedFrom: null },
-      { id: "t12", title: "請求データの突合", status: "done", goalId: "gC", continuingGoalId: null, assignees: ["m3"], due: "2026-07-22", priority: "normal", carriedFrom: null },
+      { id: "t11", title: "前年度実績データの抽出", status: "done", goalId: "gA", continuingGoalId: null, assignees: ["m2"], due: "2026-07-22", priority: "normal", carriedFrom: null, hours: 5 },
+      { id: "t12", title: "請求データの突合", status: "done", goalId: "gC", continuingGoalId: null, assignees: ["m3"], due: "2026-07-22", priority: "normal", carriedFrom: null, hours: 2 },
     ],
   };
   const schedule = { items: [
     { id: "sc-g1", kind: "goal", projectId: null, parentId: null, title: "業務フローの改善", start: "2026-07-01", end: "2026-10-30", assignees: [], history: [], status: "running" },
     { id: "sc-1", kind: "phase", projectId: "p-a", parentId: null, title: "設計工程", start: "2026-07-13", end: "2026-07-31", assignees: [], history: [] },
-    { id: "sc-2", kind: "task", projectId: "p-a", parentId: "sc-1", title: "画面設計", start: "2026-07-13", end: "2026-07-24", assignees: ["m1"], history: [] },
+    { id: "sc-2", kind: "task", projectId: "p-a", parentId: "sc-1", title: "画面設計", start: "2026-07-13", end: "2026-07-24", assignees: ["m1"], history: [], estimate: 5 },
     { id: "sc-3", kind: "task", projectId: "p-a", parentId: "sc-1", title: "帳票設計", start: "2026-07-20", end: "2026-08-07", assignees: ["m2"], history: [] },
     { id: "sc-4", kind: "milestone", projectId: "p-a", parentId: null, title: "契約更新日", start: "2026-08-14", end: "2026-08-14", assignees: [], history: [] },
-    { id: "sc-5", kind: "task", projectId: "p-b", parentId: null, title: "要件ヒアリング", start: "2026-07-15", end: "2026-07-22", assignees: ["m3"], history: [] },
+    { id: "sc-5", kind: "task", projectId: "p-b", parentId: null, title: "要件ヒアリング", start: "2026-07-15", end: "2026-07-22", assignees: ["m3"], history: [], estimate: 3 },
   ] };
   return { type: "state", board, week, weeks: [{ id: "2026-W30" }], schedule, view: "board", today: "2026-07-24", connected: true };
 }
