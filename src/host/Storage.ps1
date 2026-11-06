@@ -1086,6 +1086,43 @@ function Repair-TaskHistory {
     return $fixed
 }
 
+# ---- 継続目標の通算件数 ----------------------------------------------------
+# 週の完了タスクを継続目標ごとに数える。締めの加算と解除の減算で同じ数え方を使う。
+function Get-ContinuingDoneCounts {
+    param($Week)
+    $counts = @{}
+    foreach ($t in @($Week.tasks)) {
+        if ($t.status -ne 'done') { continue }
+        $cid = [string](Get-FieldOrDefault $t 'continuingGoalId' $null)
+        if (-not $cid) { continue }
+        if ($counts.ContainsKey($cid)) { $counts[$cid]++ } else { $counts[$cid] = 1 }
+    }
+    return $counts
+}
+
+# board.json の totalDone を増減する。Sign は 1（加算）か -1（減算）。0 未満にはしない。
+# 休止中の継続目標も対象。削除済み（board に無い）ものは無視する。
+# 週のロックの中から呼ばれる（board ロックは常に週ロックの内側で取り、逆順では取らない）。
+function Update-ContinuingTotalDone {
+    param([string]$Root, $Counts, [int]$Sign)
+    if (-not $Counts -or @($Counts.Keys).Count -eq 0) { return }
+    Invoke-WithLock -Root $Root -LockName 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        $changed = $false
+        foreach ($g in @($board.continuingGoals)) {
+            if (-not $g -or -not $Counts.ContainsKey([string]$g.id)) { continue }
+            $cur = [int](Get-FieldOrDefault $g 'totalDone' 0)
+            $new = [Math]::Max(0, $cur + $Sign * [int]$Counts[[string]$g.id])
+            if (Test-HasField $g 'totalDone') { $g.totalDone = $new }
+            else { $g | Add-Member -NotePropertyName totalDone -NotePropertyValue $new -Force }
+            $changed = $true
+        }
+        if ($changed) { Write-JsonFile $path $board }
+    }
+}
+
 # ---- 週の締め --------------------------------------------------------------
 # judgements: @{ goalId = 'achieved'|'carried' } のハッシュ
 # carryTaskIds: 次週へ運ぶ未完了タスクIDの配列（既定は持ち越し目標配下の未完了＋任意の紐づけなし）
@@ -1177,6 +1214,10 @@ function Close-Week {
             closedAt       = (Get-Date).ToString('yyyy-MM-dd HH:mm')
             closedBy       = $Actor
         }
+        # 継続目標の通算件数に、この週の完了タスクを加算する（解除で同じ件数を戻すため記録する）
+        $doneCounts = Get-ContinuingDoneCounts $week
+        Update-ContinuingTotalDone -Root $Root -Counts $doneCounts -Sign 1
+        $record.continuingDone = $doneCounts
         if ($week.PSObject.Properties.Name -contains 'closeRecord') { $week.closeRecord = $record }
         else { $week | Add-Member -NotePropertyName closeRecord -NotePropertyValue $record -Force }
         Write-JsonFile $path $week
@@ -1291,6 +1332,11 @@ function Resume-Week {
         $path = Get-WeekPath $Root $WeekId
         $w = Read-JsonFile $path
         if (-not $w) { throw "週が見つかりません: $WeekId" }
+        # 締めで加算した通算件数を戻す。記録が無い週（この機能より前に締めた週）は加算していないので戻さない。
+        $oldRec = if ($w.PSObject.Properties.Name -contains 'closeRecord') { $w.closeRecord } else { $null }
+        if ($oldRec -and (Test-HasField $oldRec 'continuingDone') -and $oldRec.continuingDone) {
+            Update-ContinuingTotalDone -Root $Root -Counts (Get-ContinuingDoneCounts $w) -Sign -1
+        }
         $w.closed = $false
         foreach ($g in @($w.goals)) { $g.status = 'running' }
         if ($w.PSObject.Properties.Name -contains 'closeRecord') { $w.closeRecord = $null }
