@@ -991,20 +991,27 @@ function openDrawer(task) {
   document.getElementById("fTitle").focus();
 }
 
-// 選んだ目標の候補イベントが2件以上のときだけ「イベント」欄を出す。
-// 1件なら自動で決まり、0件ならイベント外なので、どちらも欄は出さない。
+// 「イベント」欄は常に出し、候補が2件以上のときだけ操作できるようにする。
+// 0件はイベント外、1件は自動で決まるので、選ぶ余地がないことを灰色で見せる。
 function refreshEventField(want) {
   const goalRaw = document.getElementById("fGoal").value;
   const cands = goalRaw.startsWith("g:") ? eventCandidates(goalRaw.slice(2)) : [];
-  const wrap = document.getElementById("fEventWrap");
-  wrap.hidden = cands.length < 2;
-  if (cands.length >= 2) {
-    const sel = document.getElementById("fEvent");
-    const keep = want !== undefined ? want : sel.value;
-    const opts = [{ value: "", label: "（未選択）" }];
-    for (const id of cands) { const it = schedById(id); opts.push({ value: id, label: eventLabel(it) }); }
+  const sel = document.getElementById("fEvent");
+  // 操作できない間は選択値を持たないので、目標を切り替えても前の選択を引き継がない
+  const keep = want !== undefined ? want : (sel.disabled ? "" : sel.value);
+  sel.disabled = cands.length < 2;
+  if (cands.length === 0) {
+    fillSelect("fEvent", [{ value: "", label: "なし（イベント外）" }], "");
+  } else if (cands.length === 1) {
+    fillSelect("fEvent", [{ value: cands[0], label: eventLabel(schedById(cands[0])) + "（自動）" }], cands[0]);
+  } else {
+    const opts = [{ value: "", label: "選んでください（未選択はイベント外）" }];
+    for (const id of cands) opts.push({ value: id, label: eventLabel(schedById(id)) });
     fillSelect("fEvent", opts, cands.includes(keep) ? keep : "");
   }
+  document.getElementById("fEventHint").textContent = cands.length >= 2
+    ? "この目標は予定が複数あるため、どれに積むか選びます"
+    : "週の目標に紐づいた予定に自動で積みます";
 }
 
 // 進捗率は子タスクから自動計算した値を読み取り専用で見せる
@@ -1040,8 +1047,8 @@ function collectForm() {
     assignees: assignees,
     subtasks: normSubs(drawerSubs),
     hours: hoursRaw === "" ? null : Number(hoursRaw),
-    // 欄が出ていないとき（候補が1件以下）は自動で決まるので保存しない
-    scheduleId: document.getElementById("fEventWrap").hidden ? null : (document.getElementById("fEvent").value || null),
+    // 欄が操作できないとき（候補が1件以下）は規則（taskEventId）で自動決定するので保存しない
+    scheduleId: document.getElementById("fEvent").disabled ? null : (document.getElementById("fEvent").value || null),
   };
 }
 
@@ -1136,7 +1143,7 @@ function currentFormOf(t) {
     assignees: asArray(t.assignees),
     subtasks: normSubs(t.subtasks),
     hours: hasHours(t) ? Number(t.hours) : null,
-    // イベント欄が出る（候補2件以上）ときだけ保存値を持つ。collectForm と同じ形にそろえる
+    // イベント欄が操作できる（候補2件以上）ときだけ保存値を持つ。collectForm と同じ形にそろえる
     scheduleId: eventCandidates(t.goalId).length >= 2 && eventCandidates(t.goalId).includes(t.scheduleId) ? t.scheduleId : null,
   };
 }
