@@ -23,6 +23,7 @@
                       "projectId":  "p-a",
                       "parentId":  null,
                       "title":  "リハーサル",
+                      "estimate":  8,
                       "start":  "2026-09-30",
                       "end":  "2026-10-09",
                       "assignees":  [
@@ -38,6 +39,7 @@
                       "projectId":  "p-a",
                       "parentId":  "sc-7e65550264",
                       "title":  "タスク1",
+                      "estimate":  3,
                       "start":  "2026-09-30",
                       "end":  "2026-10-02",
                       "assignees":  [

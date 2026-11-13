@@ -191,7 +191,7 @@ function Move-Task {
 }
 
 # 新規タスクを追加して、生成したIDを返す。
-# $Fields は JS から来た任意項目（title/goalId/continuingGoalId/assignees/due/priority/projectId/description/subtasks/status）。
+# $Fields は JS から来た任意項目（title/goalId/continuingGoalId/assignees/due/priority/projectId/description/subtasks/status/hours/scheduleId）。
 function Add-Task {
     param([string]$Root, [string]$WeekId, $Fields, [string]$Actor = 'unknown')
     Invoke-WithLock -Root $Root -LockName $WeekId -Action {
@@ -218,6 +218,8 @@ function Add-Task {
             projectId        = Get-FieldOrDefault $Fields 'projectId' $null
             description      = Get-FieldOrDefault $Fields 'description' ''
             subtasks         = ConvertTo-Subtasks (Get-FieldOrDefault $Fields 'subtasks' @())
+            hours            = ConvertTo-NonNegativeNumber (Get-FieldOrDefault $Fields 'hours' $null) '工数'
+            scheduleId       = ConvertTo-NullableString (Get-FieldOrDefault $Fields 'scheduleId' $null)
             carriedFrom      = $null
             history          = @()
         }
@@ -240,13 +242,15 @@ function Update-Task {
         if (-not $task) { throw "タスクが見つかりません: $TaskId" }
 
         $changed = @()
-        foreach ($name in @('title','status','goalId','continuingGoalId','assignees','due','priority','projectId','description','subtasks')) {
+        foreach ($name in @('title','status','goalId','continuingGoalId','assignees','due','priority','projectId','description','subtasks','hours','scheduleId')) {
             if (-not (Test-HasField $Fields $name)) { continue }
             $new = $Fields.$name
             if ($name -eq 'title' -and [string]::IsNullOrWhiteSpace([string]$new)) { throw "タイトルは空にできません。" }
             if ($name -eq 'status' -and ([string]$new) -notin @('todo','doing','review','done')) { throw "不正なステータス: $new" }
             if ($name -eq 'assignees') { $new = @($new) }
             if ($name -eq 'subtasks') { $new = ConvertTo-Subtasks $new }
+            if ($name -eq 'hours') { $new = ConvertTo-NonNegativeNumber $new '工数' }
+            if ($name -eq 'scheduleId') { $new = ConvertTo-NullableString $new }
             if ($task.PSObject.Properties.Name -contains $name) { $task.$name = $new }
             else { $task | Add-Member -NotePropertyName $name -NotePropertyValue $new -Force }
             $changed += $name
@@ -285,6 +289,9 @@ function Copy-Task {
             description      = if ($src.PSObject.Properties.Name -contains 'description') { $src.description } else { '' }
             # 子タスクは同じ手順をもう一度やる前提で、すべて未チェックに戻す
             subtasks         = ConvertTo-Subtasks (Get-FieldOrDefault $src 'subtasks' @()) -Reset
+            # 工数とイベントはそのまま。子タスクが未チェックに戻るので進捗は 0 から数え直す
+            hours            = Get-FieldOrDefault $src 'hours' $null
+            scheduleId       = Get-FieldOrDefault $src 'scheduleId' $null
             carriedFrom      = $null
             history          = @()
         }
@@ -659,6 +666,28 @@ function Remove-BoardMember {
     return $affected
 }
 
+# ---- 設定（board.json の settings） ----------------------------------------
+# $Fields に含まれる項目だけを更新する。今は hoursPerDay（1人日の時間数）。
+function Update-BoardSettings {
+    param([string]$Root, $Fields, [string]$Actor = 'unknown')
+    Invoke-WithLock -Root $Root -LockName 'board' -Action {
+        $path  = Get-BoardPath $Root
+        $board = Read-JsonFile $path
+        if (-not $board) { throw "board.json が読めません。" }
+        if (-not (Test-HasField $board 'settings') -or $null -eq $board.settings) {
+            $board | Add-Member -NotePropertyName settings -NotePropertyValue ([pscustomobject]@{}) -Force
+        }
+        if (Test-HasField $Fields 'hoursPerDay') {
+            $h = ConvertTo-NonNegativeNumber $Fields.hoursPerDay '1人日の時間数'
+            if ($null -eq $h -or $h -le 0 -or $h -gt 24) { throw "1人日の時間数は 0 より大きく 24 以下の数値で指定してください。" }
+            # settings が空のオブジェクトだと Test-HasField は厳格モードで落ちるので、添字で有無を見る
+            if ($board.settings.PSObject.Properties['hoursPerDay']) { $board.settings.hoursPerDay = $h }
+            else { $board.settings | Add-Member -NotePropertyName hoursPerDay -NotePropertyValue $h -Force }
+        }
+        Write-JsonFile $path $board
+    }
+}
+
 # ---- 案件（board.json 側） -------------------------------------------------
 function Add-Project {
     param([string]$Root, [string]$Name, [string]$Actor = 'unknown')
@@ -864,6 +893,10 @@ function Test-ScheduleValues {
     if ([string]::IsNullOrWhiteSpace([string]$Vals.projectId)) { $Vals.projectId = $null } else { $Vals.projectId = [string]$Vals.projectId }
     if ([string]::IsNullOrWhiteSpace([string]$Vals.parentId))  { $Vals.parentId  = $null } else { $Vals.parentId  = [string]$Vals.parentId }
 
+    # 見積（人日）は工程と作業だけが持つ。マイルストーンと長期目標は工数を管理しない
+    if ($Vals.kind -in @('phase','task')) { $Vals.estimate = ConvertTo-NonNegativeNumber $Vals.estimate '見積' }
+    else { $Vals.estimate = $null }
+
     if ($Vals.kind -eq 'goal') {
         # 長期目標は案件にも工程にも属さない。状態は人が付ける
         $Vals.projectId = $null
@@ -900,13 +933,14 @@ function Add-ScheduleItem {
             end       = Get-FieldOrDefault $Fields 'end' ''
             assignees = Get-FieldOrDefault $Fields 'assignees' @()
             status    = Get-FieldOrDefault $Fields 'status' 'running'
+            estimate  = Get-FieldOrDefault $Fields 'estimate' $null
         }
         if ($vals.kind -eq 'milestone' -and -not $vals.end) { $vals.end = $vals.start }
         Test-ScheduleValues -Vals $vals -Items $sched.items -SelfId ''
         $item = [ordered]@{
             id = New-Id 'sc'; kind = $vals.kind; projectId = $vals.projectId; parentId = $vals.parentId
             title = $vals.title; start = $vals.start; end = $vals.end
-            assignees = $vals.assignees; history = @()
+            assignees = $vals.assignees; estimate = $vals.estimate; history = @()
         }
         if ($vals.kind -eq 'goal') { $item['status'] = $vals.status }
         Add-ItemHistory -Item $item -Text ("{0}: 作成" -f $Actor)
@@ -924,7 +958,7 @@ function Update-ScheduleItem {
         if (-not $item) { throw "スケジュール項目が見つかりません: $ItemId" }
         $oldProject = $item.projectId
         $vals = @{}
-        foreach ($k in @('kind','projectId','parentId','title','start','end','assignees','status')) {
+        foreach ($k in @('kind','projectId','parentId','title','start','end','assignees','status','estimate')) {
             $vals[$k] = if (Test-HasField $Fields $k) { $Fields.$k } else { Get-FieldOrDefault $item $k $null }
         }
         $vals.kind = [string]$vals.kind
@@ -938,6 +972,7 @@ function Update-ScheduleItem {
         }
         $oldAs = (@(Get-FieldOrDefault $item 'assignees' @()) -join ',')
         if ($oldAs -ne (@($vals.assignees) -join ',')) { $changed += 'assignees' }
+        if ([string](Get-FieldOrDefault $item 'estimate' '') -ne [string]$vals.estimate) { $changed += 'estimate' }
 
         if ($item.kind -eq 'goal' -or $vals.kind -eq 'goal') {
             $oldSt = [string](Get-FieldOrDefault $item 'status' 'running')
@@ -949,6 +984,8 @@ function Update-ScheduleItem {
         }
         foreach ($k in @('kind','projectId','parentId','title','start','end')) { $item.$k = $vals[$k] }
         $item.assignees = @($vals.assignees)
+        if (Test-HasField $item 'estimate') { $item.estimate = $vals.estimate }
+        else { $item | Add-Member -NotePropertyName estimate -NotePropertyValue $vals.estimate -Force }
 
         # 工程の案件を変えたら子もそろえる
         if ($item.kind -eq 'phase' -and [string]$oldProject -ne [string]$item.projectId) {
@@ -1044,7 +1081,111 @@ function Get-ScheduleLinks {
     return ,@($out)
 }
 
+# ---- 工数と進捗率 ----------------------------------------------------------
+# 工数を集計するのは「イベント」（工程・作業・マイルストーン）だけ。長期目標は対象外。
+# 進捗率は手入力しない。完了=100%（子タスク不問）、それ以外は子タスクがあれば 済み/全体、無ければ 0%。
+# （UI の taskProgress / taskEventId と同じ規則。変えるときは両方そろえること）
+function Get-TaskProgress {
+    param($Task)
+    # 完了は子タスクに関係なく 100%（完了は持ち越されないので、チェック漏れで工数が消えないように）
+    if ($Task.status -eq 'done') { return 1.0 }
+    $subs = @(@(Get-FieldOrDefault $Task 'subtasks' @()) | Where-Object { $null -ne $_ })
+    if ($subs.Count) {
+        $done = @($subs | Where-Object { $_.done }).Count
+        return ([double]$done / $subs.Count)
+    }
+    return 0.0
+}
+
+# 持ち越すときの工数 = 工数 ×（1 − 進捗率）。工数が無ければ $null のまま。
+function Get-RemainingHours {
+    param($Task)
+    $h = Get-FieldOrDefault $Task 'hours' $null
+    if ($null -eq $h) { return $null }
+    return [math]::Round([double]$h * (1 - (Get-TaskProgress $Task)), 1, [MidpointRounding]::AwayFromZero)
+}
+
+# タスクが属するイベントのID。無ければ $null（イベント外）。
+# 週の目標の紐づけ先のうち、存在する非 goal 項目が候補。task.scheduleId が候補ならそれ、
+# 候補がちょうど1件ならそれ、それ以外（0件／複数で未選択・候補外）はイベント外。
+# $GoalMap は 目標ID→目標、$EventMap は スケジュールID→項目（phase/task/milestone のみ）。
+function Get-TaskEventId {
+    param($Task, $GoalMap, $EventMap)
+    $gid = [string](Get-FieldOrDefault $Task 'goalId' '')
+    if (-not $gid -or -not $GoalMap.ContainsKey($gid)) { return $null }
+    $cands = @()
+    foreach ($sid in (Get-GoalScheduleIds $GoalMap[$gid])) {
+        if ($EventMap.ContainsKey([string]$sid)) { $cands += [string]$sid }
+    }
+    $mine = [string](Get-FieldOrDefault $Task 'scheduleId' '')
+    if ($mine -and ($cands -contains $mine)) { return $mine }
+    if ($cands.Count -eq 1) { return $cands[0] }
+    return $null
+}
+
+# 全週を走査し、イベントごとの出来高（進捗率 × 工数）を週単位で返す。
+# 戻り値は [{ weekId, scheduleId（null はイベント外）, hours, closed }]。未締めの週も closed=false で含める。
+# 出来高は各週のタスクから毎回求めるので、締め解除でも保存値とずれない。
+function Get-ScheduleEffort {
+    param([string]$Root)
+    $sched = Get-Schedule $Root
+    $events = @{}
+    foreach ($it in @($sched.items)) {
+        if ($it.kind -in @('phase','task','milestone')) { $events[[string]$it.id] = $it }
+    }
+    $out = @()
+    foreach ($w in (Get-WeekList $Root)) {
+        $week = Get-Week $Root $w.id
+        if (-not $week) { continue }
+        $goals = @{}
+        foreach ($g in @($week.goals)) { $goals[[string]$g.id] = $g }
+        $sum = @{}
+        $keys = New-Object System.Collections.ArrayList
+        foreach ($t in @($week.tasks)) {
+            $h = Get-FieldOrDefault $t 'hours' $null
+            if ($null -eq $h) { continue }
+            $eid = Get-TaskEventId $t $goals $events
+            $key = if ($eid) { [string]$eid } else { '' }
+            if (-not $sum.ContainsKey($key)) { $sum[$key] = 0.0; [void]$keys.Add($key) }
+            $sum[$key] = [double]$sum[$key] + (Get-TaskProgress $t) * [double]$h
+        }
+        foreach ($key in $keys) {
+            $out += [ordered]@{
+                weekId = $w.id
+                scheduleId = if ($key) { $key } else { $null }
+                hours = [math]::Round([double]$sum[$key], 1, [MidpointRounding]::AwayFromZero)
+                closed = [bool]$week.closed
+            }
+        }
+    }
+    return ,@($out)
+}
+
 # ---- 小物 ------------------------------------------------------------------
+# 工数・見積に使う「0 以上の数値」を double にそろえる。空は $null。不正値はエラー。
+function ConvertTo-NonNegativeNumber {
+    param($Value, [string]$Label)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string] -and [string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $s = [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, '{0}', $Value)
+    $n = 0.0
+    if (-not [double]::TryParse($s, [System.Globalization.NumberStyles]::Float,
+                                [System.Globalization.CultureInfo]::InvariantCulture, [ref]$n) -or
+        [double]::IsNaN($n) -or [double]::IsInfinity($n) -or $n -lt 0) {
+        throw "${Label}は 0 以上の数値で指定してください: $s"
+    }
+    return $n
+}
+
+# 空文字・空白だけの文字列は $null にする（scheduleId 用）
+function ConvertTo-NullableString {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    $t = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($t)) { return $null }
+    return $t
+}
+
 function Test-HasField {
     param($Obj, [string]$Name)
     if ($null -eq $Obj) { return $false }
@@ -1246,6 +1387,9 @@ function Close-Week {
                 priority = $t.priority; projectId = $t.projectId
                 # 子タスクは週の中の手順。済んだものはこの週の実績として残し、未チェックだけ運ぶ
                 subtasks = ConvertTo-Subtasks (Get-FieldOrDefault $t 'subtasks' @()) -OpenOnly
+                # 次週のタスクは 0% から始まるので、工数は「残り」にする（済んだ分はこの週の出来高として残る）
+                hours = Get-RemainingHours $t
+                scheduleId = Get-FieldOrDefault $t 'scheduleId' $null
                 carriedFrom = $WeekId; history = @()
             })
         }
